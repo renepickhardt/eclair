@@ -22,6 +22,7 @@ import akka.actor.{Actor, ActorContext, ActorRef, FSM, OneForOneStrategy, Possib
 import akka.event.Logging.MDC
 import akka.pattern.pipe
 import fr.acinq.bitcoin.Crypto.{PrivateKey, PublicKey}
+import fr.acinq.bitcoin.DeterministicWallet.KeyPath
 import fr.acinq.bitcoin.{ByteVector32, OutPoint, Satoshi, SatoshiLong, Script, ScriptFlags, Transaction}
 import fr.acinq.eclair.Logs.LogCategory
 import fr.acinq.eclair._
@@ -49,6 +50,7 @@ import fr.acinq.eclair.transactions._
 import fr.acinq.eclair.wire.protocol._
 import scodec.bits.ByteVector
 
+import java.io.ByteArrayOutputStream
 import java.sql.SQLException
 import scala.collection.immutable.Queue
 import scala.concurrent.ExecutionContext
@@ -435,6 +437,22 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder, remo
         case Left(ex) => handleLocalError(ex, d, None)
         case Right((localSpec, localCommitTx, remoteSpec, remoteCommitTx)) =>
           require(fundingTx.txOut(fundingTxOutputIndex).publicKeyScript == localCommitTx.input.txOut.publicKeyScript, s"pubkey script mismatch!")
+          println("signing remote commit tx")
+          println(s"funder: ${localParams.isFunder}")
+
+          def convert(input: KeyPath): ByteVector32 = {
+            val bos = new ByteArrayOutputStream()
+            input.path.take(8).foreach { p =>
+              bos.write((p >> 24 & 0xff).toInt)
+              bos.write((p >> 16 & 0xff).toInt)
+              bos.write((p >> 8 & 0xff).toInt)
+              bos.write((p & 0xff).toInt)
+            }
+            ByteVector32(ByteVector(bos.toByteArray))
+          }
+
+          println(s"bip32 path: ${convert(localParams.fundingKeyPath)}")
+          println(s"commit number: ${1}")
           val localSigOfRemoteTx = keyManager.sign(remoteCommitTx, keyManager.fundingPublicKey(localParams.fundingKeyPath), TxOwner.Remote, channelFeatures.commitmentFormat)
           // signature of their initial commitment tx that pays remote pushMsat
           val fundingCreated = FundingCreated(

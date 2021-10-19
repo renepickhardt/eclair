@@ -18,6 +18,7 @@ package fr.acinq.eclair.channel
 
 import akka.event.LoggingAdapter
 import fr.acinq.bitcoin.Crypto.{PrivateKey, PublicKey, sha256}
+import fr.acinq.bitcoin.DeterministicWallet.KeyPath
 import fr.acinq.bitcoin.{ByteVector32, ByteVector64, Crypto, Satoshi, SatoshiLong}
 import fr.acinq.eclair._
 import fr.acinq.eclair.blockchain.fee.{FeeratePerKw, OnChainFeeConf}
@@ -31,6 +32,8 @@ import fr.acinq.eclair.transactions.Transactions._
 import fr.acinq.eclair.transactions._
 import fr.acinq.eclair.wire.protocol._
 import scodec.bits.ByteVector
+
+import java.io.ByteArrayOutputStream
 
 // @formatter:off
 case class LocalChanges(proposed: List[UpdateMessage], signed: List[UpdateMessage], acked: List[UpdateMessage]) {
@@ -650,11 +653,20 @@ object Commitments {
         // remote commitment will includes all local changes + remote acked changes
         val spec = CommitmentSpec.reduce(remoteCommit.spec, remoteChanges.acked, localChanges.proposed)
         val (remoteCommitTx, htlcTxs) = makeRemoteTxs(keyManager, channelConfig, channelFeatures, remoteCommit.index + 1, localParams, remoteParams, commitInput, remoteNextPerCommitmentPoint, spec)
+        println("signing remote commit tx")
+        println(s"funder: ${commitments.localParams.isFunder}")
+        println(s"bip32 path: ${convert(commitments.localParams.fundingKeyPath)}")
+        println(s"commit number: ${remoteCommit.index + 1}")
         val sig = keyManager.sign(remoteCommitTx, keyManager.fundingPublicKey(commitments.localParams.fundingKeyPath), TxOwner.Remote, commitmentFormat)
 
         val sortedHtlcTxs: Seq[TransactionWithInputInfo] = htlcTxs.sortBy(_.input.outPoint.index)
         val channelKeyPath = keyManager.keyPath(commitments.localParams, channelConfig)
-        val htlcSigs = sortedHtlcTxs.map(keyManager.sign(_, keyManager.htlcPoint(channelKeyPath), remoteNextPerCommitmentPoint, TxOwner.Remote, commitmentFormat))
+        val htlcSigs = sortedHtlcTxs.map {
+          println("signing htlc tx")
+          println(s"funder: ${commitments.localParams.isFunder}")
+          println(s"bip32 path: ${convert(commitments.localParams.fundingKeyPath)}")
+          keyManager.sign(_, keyManager.htlcPoint(channelKeyPath), remoteNextPerCommitmentPoint, TxOwner.Remote, commitmentFormat)
+        }
 
         // NB: IN/OUT htlcs are inverted because this is the remote commit
         log.info(s"built remote commit number=${remoteCommit.index + 1} toLocalMsat=${spec.toLocal.toLong} toRemoteMsat=${spec.toRemote.toLong} htlc_in={} htlc_out={} feeratePerKw=${spec.commitTxFeerate} txid=${remoteCommitTx.tx.txid} tx={}", spec.htlcs.collect(outgoing).map(_.id).mkString(","), spec.htlcs.collect(incoming).map(_.id).mkString(","), remoteCommitTx.tx)
@@ -672,6 +684,17 @@ object Commitments {
       case Left(_) =>
         Left(CannotSignBeforeRevocation(commitments.channelId))
     }
+  }
+
+  def convert(input: KeyPath): ByteVector32 = {
+    val bos = new ByteArrayOutputStream()
+    input.path.take(8).foreach { p =>
+      bos.write((p >> 24 & 0xff).toInt)
+      bos.write((p >> 16 & 0xff).toInt)
+      bos.write((p >> 8 & 0xff).toInt)
+      bos.write((p & 0xff).toInt)
+    }
+    ByteVector32(ByteVector(bos.toByteArray))
   }
 
   def receiveCommit(commitments: Commitments, commit: CommitSig, keyManager: ChannelKeyManager)(implicit log: LoggingAdapter): Either[ChannelException, (Commitments, RevokeAndAck)] = {

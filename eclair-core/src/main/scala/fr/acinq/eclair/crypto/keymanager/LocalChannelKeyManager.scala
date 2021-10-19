@@ -19,7 +19,8 @@ package fr.acinq.eclair.crypto.keymanager
 import com.google.common.cache.{CacheBuilder, CacheLoader, LoadingCache}
 import fr.acinq.bitcoin.Crypto.{PrivateKey, PublicKey}
 import fr.acinq.bitcoin.DeterministicWallet.{derivePrivateKey, _}
-import fr.acinq.bitcoin.{Block, ByteVector32, ByteVector64, Crypto, DeterministicWallet}
+import fr.acinq.bitcoin.Transaction.hashForSigning
+import fr.acinq.bitcoin.{Block, ByteVector32, ByteVector64, Crypto, DeterministicWallet, SigVersion}
 import fr.acinq.eclair.crypto.Generators
 import fr.acinq.eclair.crypto.Monitoring.{Metrics, Tags}
 import fr.acinq.eclair.router.Announcements
@@ -45,6 +46,8 @@ object LocalChannelKeyManager {
  */
 class LocalChannelKeyManager(seed: ByteVector, chainHash: ByteVector32) extends ChannelKeyManager with Logging {
   private val master = DeterministicWallet.generate(seed)
+
+  println(Crypto.hmac512(ByteVector.view("Bitcoin seed".getBytes("UTF-8")), seed))
 
   private val privateKeys: LoadingCache[KeyPath, ExtendedPrivateKey] = CacheBuilder.newBuilder()
     .maximumSize(6 * 200) // 6 keys per channel * 200 channels
@@ -75,7 +78,7 @@ class LocalChannelKeyManager(seed: ByteVector, chainHash: ByteVector32) extends 
   override def newFundingKeyPath(isFunder: Boolean): KeyPath = {
     val last = DeterministicWallet.hardened(if (isFunder) 1 else 0)
 
-    def next(): Long = randomLong() & 0xFFFFFFFFL
+    def next(): Long = 0xaabbccddL
 
     DeterministicWallet.KeyPath(Seq(next(), next(), next(), next(), next(), next(), next(), next(), last))
   }
@@ -107,7 +110,17 @@ class LocalChannelKeyManager(seed: ByteVector, chainHash: ByteVector32) extends 
     Metrics.SignTxCount.withTags(tags).increment()
     KamonExt.time(Metrics.SignTxDuration.withTags(tags)) {
       val privateKey = privateKeys.get(publicKey.path)
-      Transactions.sign(tx, privateKey.privateKey, txOwner, commitmentFormat)
+      println(s"format: $commitmentFormat")
+      println(s"owner: $txOwner")
+      println(s"tx input: ${tx.input}")
+      println(s"tx: ${tx.tx}")
+      println(s"private key: $privateKey")
+      val hash = hashForSigning(tx.tx, 0, tx.input.redeemScript, tx.sighash(txOwner, commitmentFormat), tx.input.txOut.amount, SigVersion.SIGVERSION_WITNESS_V0)
+      println(s"hash: $hash")
+      val sig = Transactions.sign(tx, privateKey.privateKey, txOwner, commitmentFormat)
+      println(s"sig: $sig")
+      println("---------------------")
+      sig
     }
   }
 
@@ -128,7 +141,18 @@ class LocalChannelKeyManager(seed: ByteVector, chainHash: ByteVector32) extends 
     KamonExt.time(Metrics.SignTxDuration.withTags(tags)) {
       val privateKey = privateKeys.get(publicKey.path)
       val currentKey = Generators.derivePrivKey(privateKey.privateKey, remotePoint)
-      Transactions.sign(tx, currentKey, txOwner, commitmentFormat)
+      println(s"format: $commitmentFormat")
+      println(s"remote point: $remotePoint")
+      println(s"owner: $txOwner")
+      println(s"private key: $currentKey")
+      println(s"tx input: ${tx.input}")
+      println(s"tx: ${tx.tx}")
+      val hash = hashForSigning(tx.tx, 0, tx.input.redeemScript, tx.sighash(txOwner, commitmentFormat), tx.input.txOut.amount, SigVersion.SIGVERSION_WITNESS_V0)
+      println(s"hash: $hash")
+      val sig = Transactions.sign(tx, currentKey, txOwner, commitmentFormat)
+      println(s"sig: $sig")
+      println("---------------------")
+      sig
     }
   }
 

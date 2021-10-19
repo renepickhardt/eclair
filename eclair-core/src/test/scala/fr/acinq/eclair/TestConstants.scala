@@ -83,7 +83,7 @@ object TestConstants {
 
 
   object Alice {
-    val seed: ByteVector32 = ByteVector32(ByteVector.fill(32)(1))
+    val seed: ByteVector = ByteVector.fill(33)(1)
     val nodeKeyManager = new LocalNodeKeyManager(seed, Block.RegtestGenesisBlock.hash)
     val channelKeyManager = new LocalChannelKeyManager(seed, Block.RegtestGenesisBlock.hash)
 
