@@ -251,8 +251,8 @@ class Setup(val datadir: File,
 
       bitcoinClient = new BitcoinCoreClient(new BatchingBitcoinJsonRPCClient(bitcoin))
       watcher = {
-        system.actorOf(SimpleSupervisor.props(Props(new ZMQActor(config.getString("bitcoind.zmqblock"), ZMQActor.Topics.HashBlock, Some(zmqBlockConnected))), "zmqblock", SupervisorStrategy.Restart))
-        system.actorOf(SimpleSupervisor.props(Props(new ZMQActor(config.getString("bitcoind.zmqtx"), ZMQActor.Topics.RawTx, Some(zmqTxConnected))), "zmqtx", SupervisorStrategy.Restart))
+        system.actorOf(SimpleSupervisor.props(Props(new ZMQActor(config.getString("bitcoind.zmqblock"), ZMQActor.Topics.HashBlock, Some(zmqBlockConnected), nodeParams.socksProxy_opt)), "zmqblock", SupervisorStrategy.Restart))
+        system.actorOf(SimpleSupervisor.props(Props(new ZMQActor(config.getString("bitcoind.zmqtx"), ZMQActor.Topics.RawTx, Some(zmqTxConnected), nodeParams.socksProxy_opt)), "zmqtx", SupervisorStrategy.Restart))
         system.spawn(Behaviors.supervise(ZmqWatcher(nodeParams, blockHeight, bitcoinClient)).onFailure(typed.SupervisorStrategy.resume), "watcher")
       }
 

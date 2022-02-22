@@ -20,6 +20,7 @@ import akka.Done
 import akka.actor.{Actor, ActorLogging}
 import fr.acinq.bitcoin.{ByteVector32, Transaction}
 import fr.acinq.eclair.blockchain.{NewBlock, NewTransaction}
+import fr.acinq.eclair.tor.Socks5ProxyParams
 import org.zeromq.ZMQ.Event
 import org.zeromq.{SocketType, ZContext, ZMQ, ZMsg}
 import scodec.bits.ByteVector
@@ -32,7 +33,7 @@ import scala.util.Try
 /**
  * Created by PM on 04/04/2017.
  */
-class ZMQActor(address: String, topic: String, connected: Option[Promise[Done]] = None) extends Actor with ActorLogging {
+class ZMQActor(address: String, topic: String, connected: Option[Promise[Done]] = None, socksProxy: Option[Socks5ProxyParams] = None) extends Actor with ActorLogging {
 
   import ZMQActor._
 
@@ -42,6 +43,7 @@ class ZMQActor(address: String, topic: String, connected: Option[Promise[Done]] 
   subscriber.monitor("inproc://events", ZMQ.EVENT_CONNECTED | ZMQ.EVENT_DISCONNECTED)
   subscriber.setRcvHWM(0) // disable high watermark to ensure we never drop messages
   subscriber.setTCPKeepAlive(1) // enable tcp keep-alive
+  socksProxy.foreach(p => subscriber.setSocksProxy(s"${p.address.toString}"))
   subscriber.subscribe(topic.getBytes(ZMQ.CHARSET))
   subscriber.connect(address)
 
