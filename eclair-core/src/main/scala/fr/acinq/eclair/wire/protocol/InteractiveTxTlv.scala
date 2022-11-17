@@ -20,6 +20,10 @@ import fr.acinq.bitcoin.scalacompat.{ByteVector32, ByteVector64, Satoshi}
 import fr.acinq.eclair.UInt64
 import fr.acinq.eclair.wire.protocol.CommonCodecs.{bytes32, bytes64, varint}
 import fr.acinq.eclair.wire.protocol.TlvCodecs.{tlvField, tlvStream, tsatoshi}
+import fr.acinq.bitcoin.scalacompat.{ByteVector64, Satoshi}
+import fr.acinq.eclair.wire.protocol.CommonCodecs.{bytes64, varint}
+import fr.acinq.eclair.wire.protocol.TlvCodecs.{tlvField, tlvStream, tmillisatoshi, tsatoshi}
+import fr.acinq.eclair.{MilliSatoshi, UInt64}
 import scodec.Codec
 import scodec.codecs.discriminated
 
@@ -77,29 +81,54 @@ sealed trait TxInitRbfTlv extends Tlv
 
 sealed trait TxAckRbfTlv extends Tlv
 
-object TxRbfTlv {
+sealed trait SpliceInitTlv extends Tlv
+
+sealed trait SpliceAckTlv extends Tlv
+
+object InteractiveTxTlv {
   /** Amount that the peer will contribute to the transaction's shared output. */
-  case class SharedOutputContributionTlv(amount: Satoshi) extends TxInitRbfTlv with TxAckRbfTlv
+  case class SharedOutputContributionTlv(amount: Satoshi) extends TxInitRbfTlv with TxAckRbfTlv with SpliceInitTlv with SpliceAckTlv
+
+  /** Amount that the peer will push to the other side when building the commitment tx (used in splices). */
+  case class PushAmountTlv(amount: MilliSatoshi) extends SpliceInitTlv with SpliceAckTlv
 }
 
 object TxInitRbfTlv {
 
-  import TxRbfTlv._
+  import InteractiveTxTlv._
 
   val txInitRbfTlvCodec: Codec[TlvStream[TxInitRbfTlv]] = tlvStream(discriminated[TxInitRbfTlv].by(varint)
     .typecase(UInt64(0), tlvField(tsatoshi.as[SharedOutputContributionTlv]))
   )
-
 }
 
 object TxAckRbfTlv {
 
-  import TxRbfTlv._
+  import InteractiveTxTlv._
 
   val txAckRbfTlvCodec: Codec[TlvStream[TxAckRbfTlv]] = tlvStream(discriminated[TxAckRbfTlv].by(varint)
     .typecase(UInt64(0), tlvField(tsatoshi.as[SharedOutputContributionTlv]))
   )
+}
 
+object SpliceInitTlv {
+
+  import InteractiveTxTlv._
+
+  val spliceInitTlvCodec: Codec[TlvStream[SpliceInitTlv]] = tlvStream(discriminated[SpliceInitTlv].by(varint)
+    .typecase(UInt64(0), tlvField(tsatoshi.as[SharedOutputContributionTlv]))
+    .typecase(UInt64(3001), tlvField(tmillisatoshi.as[PushAmountTlv]))
+  )
+}
+
+object SpliceAckTlv {
+
+  import InteractiveTxTlv._
+
+  val spliceAckTlvCodec: Codec[TlvStream[SpliceAckTlv]] = tlvStream(discriminated[SpliceAckTlv].by(varint)
+    .typecase(UInt64(0), tlvField(tsatoshi.as[SharedOutputContributionTlv]))
+    .typecase(UInt64(3001), tlvField(tmillisatoshi.as[PushAmountTlv]))
+  )
 }
 
 sealed trait TxAbortTlv extends Tlv
