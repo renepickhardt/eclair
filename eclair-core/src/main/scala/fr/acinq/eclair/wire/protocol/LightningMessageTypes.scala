@@ -132,22 +132,22 @@ case class TxInitRbf(channelId: ByteVector32,
                      lockTime: Long,
                      feerate: FeeratePerKw,
                      tlvStream: TlvStream[TxInitRbfTlv] = TlvStream.empty) extends InteractiveTxMessage with HasChannelId {
-  val fundingContribution: Satoshi = tlvStream.get[TxRbfTlv.SharedOutputContributionTlv].map(_.amount).getOrElse(0 sat)
+  val fundingContribution: Satoshi = tlvStream.get[InteractiveTxTlv.SharedOutputContributionTlv].map(_.amount).getOrElse(0 sat)
 }
 
 object TxInitRbf {
   def apply(channelId: ByteVector32, lockTime: Long, feerate: FeeratePerKw, fundingContribution: Satoshi): TxInitRbf =
-    TxInitRbf(channelId, lockTime, feerate, TlvStream[TxInitRbfTlv](TxRbfTlv.SharedOutputContributionTlv(fundingContribution)))
+    TxInitRbf(channelId, lockTime, feerate, TlvStream[TxInitRbfTlv](InteractiveTxTlv.SharedOutputContributionTlv(fundingContribution)))
 }
 
 case class TxAckRbf(channelId: ByteVector32,
                     tlvStream: TlvStream[TxAckRbfTlv] = TlvStream.empty) extends InteractiveTxMessage with HasChannelId {
-  val fundingContribution: Satoshi = tlvStream.get[TxRbfTlv.SharedOutputContributionTlv].map(_.amount).getOrElse(0 sat)
+  val fundingContribution: Satoshi = tlvStream.get[InteractiveTxTlv.SharedOutputContributionTlv].map(_.amount).getOrElse(0 sat)
 }
 
 object TxAckRbf {
   def apply(channelId: ByteVector32, fundingContribution: Satoshi): TxAckRbf =
-    TxAckRbf(channelId, TlvStream[TxAckRbfTlv](TxRbfTlv.SharedOutputContributionTlv(fundingContribution)))
+    TxAckRbf(channelId, TlvStream[TxAckRbfTlv](InteractiveTxTlv.SharedOutputContributionTlv(fundingContribution)))
 }
 
 case class TxAbort(channelId: ByteVector32,
@@ -158,6 +158,30 @@ case class TxAbort(channelId: ByteVector32,
 
 object TxAbort {
   def apply(channelId: ByteVector32, msg: String): TxAbort = TxAbort(channelId, ByteVector.view(msg.getBytes(Charsets.US_ASCII)))
+}
+
+case class SpliceInit(channelId: ByteVector32,
+                      lockTime: Long,
+                      feerate: FeeratePerKw,
+                      tlvStream: TlvStream[SpliceInitTlv] = TlvStream.empty) extends InteractiveTxMessage with HasChannelId {
+  val fundingContribution: Satoshi = tlvStream.get[InteractiveTxTlv.SharedOutputContributionTlv].map(_.amount).getOrElse(0 sat)
+  val pushAmount: MilliSatoshi = tlvStream.get[InteractiveTxTlv.PushAmountTlv].map(_.amount).getOrElse(0 msat)
+}
+
+object SpliceInit {
+  def apply(channelId: ByteVector32, lockTime: Long, feerate: FeeratePerKw, fundingContribution: Satoshi, pushAmount: MilliSatoshi): SpliceInit =
+    SpliceInit(channelId, lockTime, feerate, TlvStream[SpliceInitTlv](InteractiveTxTlv.SharedOutputContributionTlv(fundingContribution), InteractiveTxTlv.PushAmountTlv(pushAmount)))
+}
+
+case class SpliceAck(channelId: ByteVector32,
+                     tlvStream: TlvStream[SpliceAckTlv] = TlvStream.empty) extends InteractiveTxMessage with HasChannelId {
+  val fundingContribution: Satoshi = tlvStream.get[InteractiveTxTlv.SharedOutputContributionTlv].map(_.amount).getOrElse(0 sat)
+  val pushAmount: MilliSatoshi = tlvStream.get[InteractiveTxTlv.PushAmountTlv].map(_.amount).getOrElse(0 msat)
+}
+
+object SpliceAck {
+  def apply(channelId: ByteVector32, fundingContribution: Satoshi, pushAmount: MilliSatoshi): SpliceAck =
+    SpliceAck(channelId, TlvStream[SpliceAckTlv](InteractiveTxTlv.SharedOutputContributionTlv(fundingContribution), InteractiveTxTlv.PushAmountTlv(pushAmount)))
 }
 
 case class ChannelReestablish(channelId: ByteVector32,

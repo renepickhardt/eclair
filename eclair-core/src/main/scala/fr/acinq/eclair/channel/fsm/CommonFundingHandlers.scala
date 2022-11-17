@@ -72,14 +72,17 @@ trait CommonFundingHandlers extends CommonHandlers {
     context.system.eventStream.publish(TransactionConfirmed(d.channelId, remoteNodeId, w.tx))
     d.commitments.updateLocalFundingStatus(w.tx.txid, fundingStatus).map {
       case (commitments1, commitment) =>
-        require(commitments1.active.size == 1 && commitment.fundingTxId == w.tx.txid, "there must be exactly one commitment after an initial funding tx is confirmed")
         // first of all, we watch the funding tx that is now confirmed
         watchFundingSpent(commitment)
         // in the dual-funding case we can forget all other transactions, they have been double spent by the tx that just confirmed
-        val otherFundingTxs = d.commitments.active // note how we use the unpruned original commitments
+        rollbackDualFundingTxs(d.commitments.active // note how we use the unpruned original commitments
           .filter(c => c.fundingTxId != commitment.fundingTxId)
-          .map(_.localFundingStatus).collect { case fundingTx: DualFundedUnconfirmedFundingTx => fundingTx.sharedTx }
-        rollbackDualFundingTxs(otherFundingTxs)
+          .map(_.localFundingStatus).collect { case fundingTx: DualFundedUnconfirmedFundingTx => fundingTx.sharedTx })
+        // we then put a watch-confirmed on the funding txs with the next index
+        commitments1.active
+          .filter(c => c.fundingTxIndex == commitment.fundingTxIndex + 1)
+          .map(_.localFundingStatus)
+          .collect { case fundingTx: DualFundedUnconfirmedFundingTx => watchFundingConfirmed(fundingTx.sharedTx.txId, fundingTx.fundingParams.minDepth_opt) }
         (commitments1, commitment)
     }
   }
