@@ -327,6 +327,9 @@ trait ChannelOpenDualFunded extends DualFundingHandlers with ErrorHandlers {
         case _: TxAckRbf =>
           log.info("ignoring unexpected tx_ack_rbf message")
           stay() sending Warning(d.channelId, InvalidRbfAttempt(d.channelId).getMessage)
+        case _: SpliceInit | _: SpliceAck =>
+          log.info("ignoring unexpected splice message")
+          stay() sending Warning(d.channelId, InvalidRbfAttempt(d.channelId).getMessage)
       }
 
     case Event(commitSig: CommitSig, d: DATA_WAIT_FOR_DUAL_FUNDING_CREATED) =>

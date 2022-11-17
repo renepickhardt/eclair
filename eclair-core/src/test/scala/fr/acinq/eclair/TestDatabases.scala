@@ -77,7 +77,7 @@ object TestDatabases {
         case d: DATA_WAIT_FOR_DUAL_FUNDING_CONFIRMED => d.copy(commitments = freeze2(d.commitments))
         case d: DATA_WAIT_FOR_DUAL_FUNDING_READY => d.copy(commitments = freeze2(d.commitments))
         case d: DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT => d.copy(commitments = freeze2(d.commitments))
-        case d: DATA_NORMAL => d.copy(commitments = freeze2(d.commitments))
+        case d: DATA_NORMAL => d.copy(commitments = freeze2(d.commitments)).modify(_.spliceStatus).setTo(SpliceStatus.NoSplice)
         case d: DATA_CLOSING => d.copy(commitments = freeze2(d.commitments))
         case d: DATA_NEGOTIATING => d.copy(commitments = freeze2(d.commitments))
         case d: DATA_SHUTDOWN => d.copy(commitments = freeze2(d.commitments))

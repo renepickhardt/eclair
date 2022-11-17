@@ -152,8 +152,16 @@ case class RemoteCommit(index: Long, spec: CommitmentSpec, txid: ByteVector32, r
 /** We have the next remote commit when we've sent our commit_sig but haven't yet received their revoke_and_ack. */
 case class NextRemoteCommit(sig: CommitSig, commit: RemoteCommit)
 
-/** A minimal commitment for a given funding tx. */
-case class Commitment(localFundingStatus: LocalFundingStatus, remoteFundingStatus: RemoteFundingStatus,
+/**
+ * A minimal commitment for a given funding tx.
+ *
+ * @param fundingTxIndex index of the funding tx in the life of the channel:
+ *                       - initial funding tx has index 0
+ *                       - splice txs have index 1, 2, ...
+ *                       - commitments that share the same index are rbfed
+ */
+case class Commitment(fundingTxIndex: Int,
+                      localFundingStatus: LocalFundingStatus, remoteFundingStatus: RemoteFundingStatus,
                       localCommit: LocalCommit, remoteCommit: RemoteCommit, nextRemoteCommit_opt: Option[NextRemoteCommit]) {
   val commitInput: InputInfo = localCommit.commitTxAndRemoteSig.commitTx.input
   val fundingTxId: ByteVector32 = commitInput.outPoint.txid
@@ -254,6 +262,11 @@ case class Commitment(localFundingStatus: LocalFundingStatus, remoteFundingStatu
       }
     }
   }
+
+  def isIdle(changes: CommitmentChanges): Boolean =
+    localCommit.spec.htlcs.isEmpty && remoteCommit.spec.htlcs.isEmpty && nextRemoteCommit_opt.isEmpty &&
+      changes.localChanges.all.isEmpty && changes.remoteChanges.all.isEmpty
+
 
   private def hasNoPendingHtlcs: Boolean = localCommit.spec.htlcs.isEmpty && remoteCommit.spec.htlcs.isEmpty && nextRemoteCommit_opt.isEmpty
 
@@ -613,6 +626,7 @@ object Commitment {
 
 /** Subset of Commitments when we want to work with a single, specific commitment. */
 case class FullCommitment(params: ChannelParams, changes: CommitmentChanges,
+                          fundingTxIndex: Int,
                           localFundingStatus: LocalFundingStatus, remoteFundingStatus: RemoteFundingStatus,
                           localCommit: LocalCommit, remoteCommit: RemoteCommit, nextRemoteCommit_opt: Option[NextRemoteCommit]) {
   val channelId = params.channelId
@@ -621,7 +635,7 @@ case class FullCommitment(params: ChannelParams, changes: CommitmentChanges,
   val commitInput = localCommit.commitTxAndRemoteSig.commitTx.input
   val fundingTxId = commitInput.outPoint.txid
   val capacity = commitInput.txOut.amount
-  val commitment = Commitment(localFundingStatus, remoteFundingStatus, localCommit, remoteCommit, nextRemoteCommit_opt)
+  val commitment = Commitment(fundingTxIndex, localFundingStatus, remoteFundingStatus, localCommit, remoteCommit, nextRemoteCommit_opt)
 
   def localChannelReserve: Satoshi = commitment.localChannelReserve(params)
 
@@ -681,12 +695,13 @@ case class Commitments(params: ChannelParams,
   lazy val availableBalanceForReceive: MilliSatoshi = active.map(_.availableBalanceForReceive(params, changes)).min
 
   // We always use the last commitment that was created, to make sure we never go back in time.
-  val latest = FullCommitment(params, changes, active.head.localFundingStatus, active.head.remoteFundingStatus, active.head.localCommit, active.head.remoteCommit, active.head.nextRemoteCommit_opt)
+  val latest = FullCommitment(params, changes, active.head.fundingTxIndex, active.head.localFundingStatus, active.head.remoteFundingStatus, active.head.localCommit, active.head.remoteCommit, active.head.nextRemoteCommit_opt)
 
   def add(commitment: Commitment): Commitments = copy(active = commitment +: active)
 
   // @formatter:off
   // HTLCs and pending changes are the same for all active commitments, so we don't need to loop through all of them.
+  def isIdle: Boolean = active.head.isIdle(changes)
   def hasNoPendingHtlcsOrFeeUpdate: Boolean = active.head.hasNoPendingHtlcsOrFeeUpdate(changes)
   def hasPendingOrProposedHtlcs: Boolean = active.head.hasPendingOrProposedHtlcs(changes)
   def timedOutOutgoingHtlcs(currentHeight: BlockHeight): Set[UpdateAddHtlc] = active.head.timedOutOutgoingHtlcs(currentHeight)
