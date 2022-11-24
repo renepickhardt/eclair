@@ -370,6 +370,7 @@ private[channel] object ChannelCodecs4 {
                                   // The direction we use is from our local point of view.
                                   htlcs: Set[DirectedHtlc],
                                   active: List[Commitment],
+                                  inactive: List[Commitment],
                                   remoteNextCommitInfo: Either[WaitForRev, PublicKey],
                                   remotePerCommitmentSecrets: ShaChain,
                                   originChannels: Map[Long, Origin],
@@ -379,6 +380,7 @@ private[channel] object ChannelCodecs4 {
           params = params,
           changes = changes,
           active = active,
+          inactive = inactive,
           remoteNextCommitInfo,
           remotePerCommitmentSecrets,
           originChannels,
@@ -391,14 +393,17 @@ private[channel] object ChannelCodecs4 {
       def apply(commitments: Commitments): EncodedCommitments = {
         // The direction we use is from our local point of view: we use sets, which deduplicates htlcs that are in both
         // local and remote commitments.
-        val htlcs = commitments.active.head.localCommit.spec.htlcs ++
-          commitments.active.head.remoteCommit.spec.htlcs.map(_.opposite) ++
-          commitments.active.head.nextRemoteCommit_opt.map(_.commit.spec.htlcs.map(_.opposite)).getOrElse(Set.empty)
+        // All active commitments have the same htlc set, but each inactive commitment may have a distinct htlc set
+        val commitmentsSet = (commitments.active.head +: commitments.inactive).toSet
+        val htlcs = commitmentsSet.flatMap(_.localCommit.spec.htlcs) ++
+          commitmentsSet.flatMap(_.remoteCommit.spec.htlcs.map(_.opposite)) ++
+          commitmentsSet.flatMap(_.nextRemoteCommit_opt.toList.flatMap(_.commit.spec.htlcs.map(_.opposite)))
         EncodedCommitments(
           params = commitments.params,
           changes = commitments.changes,
           htlcs = htlcs,
           active = commitments.active.toList,
+          inactive = commitments.inactive.toList,
           remoteNextCommitInfo = commitments.remoteNextCommitInfo,
           remotePerCommitmentSecrets = commitments.remotePerCommitmentSecrets,
           originChannels = commitments.originChannels,
@@ -412,6 +417,7 @@ private[channel] object ChannelCodecs4 {
         ("changes" | changesCodec) ::
         (("htlcs" | setCodec(htlcCodec)) >>:~ { htlcs =>
           ("active" | listOfN(uint16, commitmentCodec(htlcs))) ::
+            ("inactive" | listOfN(uint16, commitmentCodec(htlcs))) ::
             ("remoteNextCommitInfo" | either(bool8, waitForRevCodec, publicKey)) ::
             ("remotePerCommitmentSecrets" | byteAligned(ShaChain.shaChainCodec)) ::
             ("originChannels" | originsMapCodec) ::

@@ -412,6 +412,10 @@ object LightningMessageCodecs {
   val spliceAckCodec: Codec[SpliceAck] = (
     ("channelId" | bytes32) ::
       ("tlvStream" | SpliceAckTlv.spliceAckTlvCodec)).as[SpliceAck]
+
+  val spliceConfirmedCodec: Codec[SpliceLocked] = (
+    ("channelId" | bytes32) ::
+      ("fundingTxid" | bytes32)).as[SpliceLocked]
   //
 
   //
@@ -463,11 +467,12 @@ object LightningMessageCodecs {
     .typecase(264, replyChannelRangeCodec)
     .typecase(265, gossipTimestampFilterCodec)
     .typecase(513, onionMessageCodec)
-  // NB: blank lines to minimize merge conflicts
+    // NB: blank lines to minimize merge conflicts
 
     //
     .typecase(37000, spliceInit)
     .typecase(37002, spliceAckCodec)
+    .typecase(37004, spliceConfirmedCodec)
   //
 
   //

@@ -184,6 +184,9 @@ object SpliceAck {
     SpliceAck(channelId, TlvStream[SpliceAckTlv](InteractiveTxTlv.SharedOutputContributionTlv(fundingContribution), InteractiveTxTlv.PushAmountTlv(pushAmount)))
 }
 
+case class SpliceLocked(channelId: ByteVector32,
+                        fundingTxid: ByteVector32) extends ChannelMessage with HasChannelId
+
 case class ChannelReestablish(channelId: ByteVector32,
                               nextLocalCommitmentNumber: Long,
                               nextRemoteRevocationNumber: Long,

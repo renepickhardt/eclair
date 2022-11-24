@@ -20,14 +20,16 @@ import akka.testkit.TestProbe
 import com.softwaremill.quicklens.ModifyPimp
 import fr.acinq.bitcoin.scalacompat.SatoshiLong
 import fr.acinq.eclair._
+import fr.acinq.eclair.blockchain.bitcoind.ZmqWatcher.{WatchFundingConfirmed, WatchFundingConfirmedTriggered, WatchFundingSpent}
 import fr.acinq.eclair.blockchain.fee._
 import fr.acinq.eclair.channel.LocalFundingStatus.DualFundedUnconfirmedFundingTx
 import fr.acinq.eclair.channel._
 import fr.acinq.eclair.channel.fund.InteractiveTxBuilder.FullySignedSharedTransaction
+import fr.acinq.eclair.channel.states.ChannelStateTestsTags.NoMaxHtlcValueInFlight
 import fr.acinq.eclair.channel.states.{ChannelStateTestsBase, ChannelStateTestsTags}
 import fr.acinq.eclair.wire.protocol._
-import org.scalatest.Outcome
 import org.scalatest.funsuite.FixtureAnyFunSuiteLike
+import org.scalatest.{Outcome, Tag}
 
 /**
  * Created by PM on 05/07/2016.
@@ -54,12 +56,9 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     withFixture(test.toNoArgTest(setup))
   }
 
-  test("recv CMD_SPLICE_IN") { f =>
+  def initiateSplice(f: FixtureParam) = {
     import f._
-    val initialState = alice.stateData.asInstanceOf[DATA_NORMAL]
-    assert(initialState.commitments.latest.capacity == 1_500_000.sat)
-    assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
-    assert(initialState.commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
+
     val sender = TestProbe()
     val cmd = CMD_SPLICE_IN(sender.ref, 500_000 sat)
     alice ! cmd
@@ -100,9 +99,94 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     awaitCond(bob.stateData.asInstanceOf[DATA_NORMAL].spliceStatus == SpliceStatus.NoSplice)
     awaitCond(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.asInstanceOf[DualFundedUnconfirmedFundingTx].sharedTx.isInstanceOf[FullySignedSharedTransaction])
     awaitCond(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.asInstanceOf[DualFundedUnconfirmedFundingTx].sharedTx.isInstanceOf[FullySignedSharedTransaction])
+  }
 
+  test("recv CMD_SPLICE_IN") { f =>
+    import f._
+
+    val initialState = alice.stateData.asInstanceOf[DATA_NORMAL]
+    assert(initialState.commitments.latest.capacity == 1_500_000.sat)
+    assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
+    assert(initialState.commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
+
+    initiateSplice(f)
+
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.capacity == 2_000_000.sat)
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toLocal == 1_300_000_000.msat)
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
+  }
+
+  test("recv WatchFundingConfirmedTriggered with splice in progress", Tag(NoMaxHtlcValueInFlight)) { f =>
+    import f._
+
+    val sender = TestProbe()
+    // command for a large payment (larger than local balance pre-slice)
+    val cmd = CMD_ADD_HTLC(sender.ref, 1_000_000_000 msat, randomBytes32(), CltvExpiryDelta(144).toCltvExpiry(currentBlockHeight), TestConstants.emptyOnionPacket, None, localOrigin(sender.ref))
+    // first attempt at payment fails (not enough balance)
+    alice ! cmd
+    sender.expectMsgType[RES_ADD_FAILED[_]]
+    alice2bob.expectNoMessage()
+
+    initiateSplice(f)
+    alice2blockchain.expectMsgType[WatchFundingConfirmed]
+    alice2blockchain.expectNoMessage()
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get)
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get)
+    alice2bob.expectMsgType[SpliceLocked]
+    alice2bob.forward(bob)
+    bob2alice.expectMsgType[SpliceLocked]
+    bob2alice.forward(alice)
+
+    // 2nd attempt works!
+    alice ! cmd
+    sender.expectMsgType[RES_SUCCESS[CMD_ADD_HTLC]]
+    alice2bob.expectMsgType[UpdateAddHtlc]
+    alice2bob.forward(bob)
+
+    alice ! CMD_SIGN()
+    alice2bob.expectMsgType[CommitSig]
+    alice2bob.forward(bob)
+    bob2alice.expectMsgType[RevokeAndAck]
+    bob2alice.forward(alice)
+  }
+
+  test("recv WatchFundingConfirmedTriggered with two unconfirmed splice txs", Tag(NoMaxHtlcValueInFlight)) { f =>
+    import f._
+
+    initiateSplice(f)
+    val watchConfirmed1 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
+    alice2blockchain.expectNoMessage()
+    val fundingTx1 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    assert(fundingTx1.txid == watchConfirmed1.txId)
+
+    initiateSplice(f)
+    // we're not putting a watch confirm immediately for the second watch
+    alice2blockchain.expectNoMessage()
+    val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+
+    // splice 1 confirms
+    watchConfirmed1.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx1.txid)
+    alice2bob.forward(bob)
+    alice2blockchain.expectMsgType[WatchFundingSpent]
+
+    // watch for splice 2 is set
+    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
+    assert(fundingTx2.txid == watchConfirmed2.txId)
+
+    // splice 2 confirms
+    watchConfirmed2.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
+    alice2bob.forward(bob)
+  }
+
+  test("recv CMD_ADD_HTLC with multiple commitments") { f =>
+    import f._
+    initiateSplice(f)
+    val sender = TestProbe()
+    alice ! CMD_ADD_HTLC(sender.ref, 500000 msat, randomBytes32(), CltvExpiryDelta(144).toCltvExpiry(currentBlockHeight), TestConstants.emptyOnionPacket, None, localOrigin(sender.ref))
+    sender.expectMsgType[RES_SUCCESS[CMD_ADD_HTLC]]
+    alice2bob.expectMsgType[UpdateAddHtlc]
   }
 
 }

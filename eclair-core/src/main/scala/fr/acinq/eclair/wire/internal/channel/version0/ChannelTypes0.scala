@@ -220,6 +220,7 @@ private[channel] object ChannelTypes0 {
         ChannelParams(channelId, channelConfig, channelFeatures, localParams, remoteParams, channelFlags),
         CommitmentChanges(localChanges, remoteChanges, localNextHtlcId, remoteNextHtlcId),
         Seq(commitment),
+        inactive = Nil,
         remoteNextCommitInfo.fold(w => Left(WaitForRev(w.sentAfterLocalCommitIndex)), remotePerCommitmentPoint => Right(remotePerCommitmentPoint)),
         remotePerCommitmentSecrets,
         originChannels
