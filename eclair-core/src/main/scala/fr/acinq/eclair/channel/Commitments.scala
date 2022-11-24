@@ -166,6 +166,10 @@ case class Commitment(fundingTxIndex: Int,
   val commitInput: InputInfo = localCommit.commitTxAndRemoteSig.commitTx.input
   val fundingTxId: ByteVector32 = commitInput.outPoint.txid
   val capacity: Satoshi = commitInput.txOut.amount
+  val locked: Boolean = (localFundingStatus, remoteFundingStatus) match {
+    case (_: LocalFundingStatus.ZeroconfPublishedFundingTx | _: LocalFundingStatus.ConfirmedFundingTx, _: RemoteFundingStatus.Locked.type) => true
+    case _ => false
+  }
 
   /** Channel reserve that applies to our funds. */
   def localChannelReserve(params: ChannelParams): Satoshi = if (params.channelFeatures.hasFeature(Features.DualFunding)) {
@@ -667,11 +671,15 @@ case class WaitForRev(sentAfterLocalCommitIndex: Long)
 
 /**
  * @param active                all currently valid commitments
+ * @param inactive              commitments that can potentially end up on-chain, but shouldn't be taken into account
+ *                              when updating the channel state; they are zero-conf and have been superseded by a newer
+ *                              commitment, which funding tx is not yet confirmed, and will be pruned when it confirms
  * @param remoteChannelData_opt peer backup
  */
 case class Commitments(params: ChannelParams,
                        changes: CommitmentChanges,
                        active: Seq[Commitment],
+                       inactive: Seq[Commitment] = Nil,
                        remoteNextCommitInfo: Either[WaitForRev, PublicKey], // this one is tricky, it must be kept in sync with Commitment.nextRemoteCommit_opt
                        remotePerCommitmentSecrets: ShaChain,
                        originChannels: Map[Long, Origin], // for outgoing htlcs relayed through us, details about the corresponding incoming htlcs
@@ -1023,27 +1031,69 @@ case class Commitments(params: ChannelParams,
     } else {
       val commitments1 = copy(active = active.map {
         case c if c.fundingTxId == txId =>
-          log.info(s"setting localFundingStatus=${status.getClass.getSimpleName} for funding txid=$txId")
+          log.info(s"setting localFundingStatus=${status.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
           c.copy(localFundingStatus = status)
         case c => c
-      }).pruneCommitments()
+      }).deactivateCommitments().pruneCommitments()
+      val commitment = commitments1.active.find(_.fundingTxId == txId).get
+      Right(commitments1, commitment)
+    }
+  }
+
+  def updateRemoteFundingStatus(txId: ByteVector32)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
+    if (!this.active.exists(_.fundingTxId == txId)) {
+      log.error(s"funding txid=$txId doesn't match any of our funding txs")
+      Left(this)
+    } else {
+    val commitments1 = copy(active = active.map {
+      case c if c.fundingTxId == txId =>
+        log.info(s"setting remoteFundingStatus=${RemoteFundingStatus.Locked.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
+        c.copy(remoteFundingStatus = RemoteFundingStatus.Locked)
+      case c => c
+    }).deactivateCommitments()
       val commitment = commitments1.active.find(_.fundingTxId == txId).get
       Right(commitments1, commitment)
     }
   }
 
   /**
-   * Current (pre-splice) implementation prune initial commitments. There can be several of them with RBF, but they all
-   * double-spend each other and can be pruned once one of them confirms.
+   * Commitments are considered inactive when they have been superseded by a newer commitment, but can still potentially
+   * end up on-chain. This is a consequence of using zero-conf. Inactive commitments will be cleaned up by
+   * [[pruneCommitments()]], when the next funding tx confirms.
+   */
+  def deactivateCommitments()(implicit log: LoggingAdapter): Commitments = {
+    active
+      .filter(_.locked)
+      .sortBy(_.fundingTxIndex)
+      .lastOption match {
+      case Some(lastLocked) =>
+        // all commitments older than this one are inactive
+        val inactive1 = active.filter(c => c.fundingTxIndex < lastLocked.fundingTxIndex)
+        val active1 = active diff inactive1
+        inactive1.foreach(c => log.info("deactivating commitment index={} fundingTxid={}", c.fundingTxIndex, c.fundingTxId))
+        copy(active = active1, inactive = inactive1 ++ inactive)
+      case _ =>
+        this
+    }
+  }
+
+  /**
+   * We can prune commitments in two cases:
+   * - their funding tx has been permanently double-spent by the funding tx of a concurrent commitments (happens when using RBF)
+   * - their funding tx has been permanently spent by a splice tx
    */
   def pruneCommitments()(implicit log: LoggingAdapter): Commitments = {
-    active.find(_.localFundingStatus.isInstanceOf[LocalFundingStatus.ConfirmedFundingTx]) match {
+    active
+      .filter(_.localFundingStatus.isInstanceOf[LocalFundingStatus.ConfirmedFundingTx])
+      .sortBy(_.fundingTxIndex)
+      .lastOption match {
       case Some(lastConfirmed) =>
         // we can prune all other commitments with the same or lower funding index
-        val pruned = active.filter(c => c.fundingTxId != lastConfirmed.fundingTxId)
+        val pruned = (active ++ inactive).filter(c => c.fundingTxId != lastConfirmed.fundingTxId && c.fundingTxIndex <= lastConfirmed.fundingTxIndex)
         val active1 = active diff pruned
-        pruned.foreach(c => log.info("pruning commitment fundingTxid={}", c.fundingTxId))
-        copy(active = active1)
+        val inactive1 = inactive diff pruned
+        pruned.foreach(c => log.info("pruning commitment index={} fundingTxid={}", c.fundingTxIndex, c.fundingTxId))
+        copy(active = active1, inactive = inactive1)
       case _ =>
         this
     }

@@ -106,6 +106,7 @@
         "remotePerCommitmentPoint" : "02b82bbd59e0d22665671d9e47d8733058b92f18e906e9403753661aa03dc9e4dd"
       }
     } ],
+    "inactive" : [ ],
     "remoteNextCommitInfo" : "02a4471183c519e54b8ee66fb41cbe06fed1153fce258db72ce67f9a9e044f0a16",
     "remotePerCommitmentSecrets" : null,
     "originChannels" : { }

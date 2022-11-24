@@ -907,6 +907,18 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
           stay() sending Warning(d.channelId, UnexpectedInteractiveTxMessage(d.channelId, msg).getMessage)
       }
 
+    case Event(w: WatchFundingConfirmedTriggered, d: DATA_NORMAL) =>
+      acceptFundingTxConfirmed(w, d) match {
+        case Right((commitments1, _)) => stay() using d.copy(commitments = commitments1) storing() sending SpliceLocked(d.channelId, w.tx.txid)
+        case Left(_) => stay()
+      }
+
+    case Event(msg: SpliceLocked, d: DATA_NORMAL) =>
+      d.commitments.updateRemoteFundingStatus(msg.fundingTxid) match {
+        case Right((commitments1, _)) => stay() using d.copy(commitments = commitments1) storing()
+        case Left(_) => stay()
+      }
+
     case Event(INPUT_DISCONNECTED, d: DATA_NORMAL) =>
       // we cancel the timer that would have made us send the enabled update after reconnection (flappy channel protection)
       cancelTimer(Reconnected.toString)

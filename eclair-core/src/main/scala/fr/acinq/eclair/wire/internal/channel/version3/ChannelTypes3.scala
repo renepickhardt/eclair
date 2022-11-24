@@ -45,6 +45,7 @@ private[channel] object ChannelTypes3 {
       ChannelParams(channelId, channelConfig, channelFeatures, localParams, remoteParams, channelFlags),
       CommitmentChanges(localChanges, remoteChanges, localNextHtlcId, remoteNextHtlcId),
       Seq(Commitment(fundingTxIndex = 0, localFundingStatus, remoteFundingStatus, localCommit, remoteCommit, remoteNextCommitInfo.left.toOption.map(w => NextRemoteCommit(w.sent, w.nextRemoteCommit)))),
+      inactive = Nil,
       remoteNextCommitInfo.fold(w => Left(WaitForRev(w.sentAfterLocalCommitIndex)), remotePerCommitmentPoint => Right(remotePerCommitmentPoint)),
       remotePerCommitmentSecrets,
       originChannels
