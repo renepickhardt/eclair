@@ -75,6 +75,12 @@ trait Channel {
     }
   }
 
+  val spliceIn: Route = postRequest("splicein") { implicit f =>
+    formFields(channelIdFormParam, "amountIn".as[Satoshi], "pushMsat".as[MilliSatoshi].?) {
+      (channelId, amountIn, pushMsat_opt) => complete(eclairApi.spliceIn(channelId, amountIn, pushMsat_opt))
+    }
+  }
+
   val close: Route = postRequest("close") { implicit t =>
     withChannelsIdentifier { channels =>
       formFields("scriptPubKey".as[ByteVector](bytesUnmarshaller).?, "preferredFeerateSatByte".as[FeeratePerByte].?, "minFeerateSatByte".as[FeeratePerByte].?, "maxFeerateSatByte".as[FeeratePerByte].?) {
@@ -132,6 +138,6 @@ trait Channel {
     complete(eclairApi.channelBalances())
   }
 
-  val channelRoutes: Route = open ~ rbfOpen ~ close ~ forceClose ~ channel ~ channels ~ allChannels ~ allUpdates ~ channelStats ~ channelBalances
+  val channelRoutes: Route = open ~ rbfOpen ~ spliceIn ~ close ~ forceClose ~ channel ~ channels ~ allChannels ~ allUpdates ~ channelStats ~ channelBalances
 
 }
