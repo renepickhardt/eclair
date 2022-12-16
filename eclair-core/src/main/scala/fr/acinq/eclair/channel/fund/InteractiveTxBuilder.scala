@@ -114,8 +114,7 @@ object InteractiveTxBuilder {
   }
 
   case class Multisig2of2Input(info: InputInfo, localFundingPubkey: PublicKey, remoteFundingPubkey: PublicKey) extends SharedFundingInput {
-    // This value was computed assuming 73 bytes signatures (worst-case scenario).
-    override val weight: Long = 388
+    override val weight: Long = Multisig2of2Input.weight
 
     override def sign(keyManager: ChannelKeyManager, params: ChannelParams, tx: Transaction): ByteVector64 = {
       val fundingPubkey = keyManager.fundingPublicKey(params.localParams.fundingKeyPath)
@@ -124,6 +123,8 @@ object InteractiveTxBuilder {
   }
 
   object Multisig2of2Input {
+    val weight: Long = 388
+
     def apply(keyManager: ChannelKeyManager, params: ChannelParams, commitment: Commitment): Multisig2of2Input = Multisig2of2Input(
       info = commitment.commitInput,
       localFundingPubkey = keyManager.fundingPublicKey(params.localParams.fundingKeyPath).publicKey,
@@ -161,7 +162,30 @@ object InteractiveTxBuilder {
     // BOLT 2: MUST set `feerate` greater than or equal to 25/24 times the `feerate` of the previously constructed transaction, rounded down.
     val minNextFeerate: FeeratePerKw = targetFeerate * 25 / 24
     // BOLT 2: the initiator's serial IDs MUST use even values and the non-initiator odd values.
-    val serialIdParity = if (isInitiator) 0 else 1
+    val serialIdParity: Int = if (isInitiator) 0 else 1
+  }
+
+  def computeLocalContribution(isInitiator: Boolean, commitment: Commitment, spliceInAmount: Satoshi, spliceOut: List[TxOut], targetFeerate: FeeratePerKw): Satoshi = {
+    // If there is a splice-in, whatever the amount of the splice-in, fees will be paid for by bitcoind, when we call
+    // fundrawtransaction to pay the inputs. they won't change the contribution so we don't take them into account
+    val fees = if (spliceInAmount == 0.sat) {
+      val commonFieldsWeight = if (isInitiator) {
+        val dummyTx = Transaction(
+          version = 2,
+          txIn = Nil, // NB: we add the weight manually
+          txOut = commitment.commitInput.txOut +: Nil, // we're taking the previous output, it has the wrong amount but we don't care: only the weight matters to compute fees
+          lockTime = 0
+        )
+        dummyTx.weight() + Multisig2of2Input.weight
+      } else 0
+      val spliceOutputsWeight = 4 * spliceOut.map(TxOut.write(_).size).sum
+      val weight = commonFieldsWeight + spliceOutputsWeight
+      Transactions.weight2fee(targetFeerate, weight.toInt)
+    } else {
+      // if there is a splice-in, bitcoind will add fees when adding the input
+      0 sat
+    }
+    commitment.localCommit.spec.toLocal.truncateToSatoshi + spliceInAmount - spliceOut.map(_.amount).sum - fees
   }
 
   // @formatter:off
@@ -374,9 +398,9 @@ object InteractiveTxBuilder {
       return Left(InvalidFundingSignature(fundingParams.channelId, Some(partiallySignedTx.txId)))
     }
     // We allow a 5% error margin since witness size prediction could be inaccurate.
-    /*if (fundingParams.localAmount > 0.sat && txWithSigs.feerate < fundingParams.targetFeerate * 0.95) {
+    if (fundingParams.localAmount > 0.sat && txWithSigs.feerate < fundingParams.targetFeerate * 0.95) {
       return Left(InvalidFundingFeerate(fundingParams.channelId, fundingParams.targetFeerate, txWithSigs.feerate))
-    }*/
+    }
     val previousOutputs = {
       val sharedOutput = fundingParams.sharedInput_opt.map(sharedInput => sharedInput.info.outPoint -> sharedInput.info.txOut).toMap
       val localOutputs = txWithSigs.tx.localInputs.map(i => i.outPoint -> i.previousTx.txOut(i.previousTxOutput.toInt)).toMap
@@ -701,7 +725,6 @@ private class InteractiveTxBuilder(replyTo: ActorRef[InteractiveTxBuilder.Respon
     val sharedTx = SharedTransaction(sharedInput_opt, sharedOutput, localInputs.toList, remoteInputs.toList, localOutputs.toList, remoteOutputs.toList, fundingParams.lockTime)
     val tx = sharedTx.buildUnsignedTx()
     val sharedOutputIndex = tx.txOut.indexWhere(_.publicKeyScript == fundingParams.fundingPubkeyScript)
-    log.info("built shared tx with fee={}", sharedTx.fees)
 
     if (sharedTx.localAmountIn < sharedTx.localAmountOut || sharedTx.remoteAmountIn < sharedTx.remoteAmountOut) {
       log.warn("invalid interactive tx: input amount is too small (localIn={}, localOut={}, remoteIn={}, remoteOut={})", sharedTx.localAmountIn, sharedTx.localAmountOut, sharedTx.remoteAmountIn, sharedTx.remoteAmountOut)

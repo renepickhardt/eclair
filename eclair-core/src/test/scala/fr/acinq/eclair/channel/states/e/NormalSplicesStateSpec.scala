@@ -18,7 +18,7 @@ package fr.acinq.eclair.channel.states.e
 
 import akka.testkit.TestProbe
 import com.softwaremill.quicklens.ModifyPimp
-import fr.acinq.bitcoin.scalacompat.SatoshiLong
+import fr.acinq.bitcoin.scalacompat.{ByteVector32, SatoshiLong}
 import fr.acinq.eclair._
 import fr.acinq.eclair.blockchain.bitcoind.ZmqWatcher.{WatchFundingConfirmed, WatchFundingConfirmedTriggered, WatchFundingSpent}
 import fr.acinq.eclair.blockchain.fee._
@@ -27,6 +27,7 @@ import fr.acinq.eclair.channel._
 import fr.acinq.eclair.channel.fund.InteractiveTxBuilder.FullySignedSharedTransaction
 import fr.acinq.eclair.channel.states.ChannelStateTestsTags.NoMaxHtlcValueInFlight
 import fr.acinq.eclair.channel.states.{ChannelStateTestsBase, ChannelStateTestsTags}
+import fr.acinq.eclair.transactions.Transactions
 import fr.acinq.eclair.wire.protocol._
 import org.scalatest.funsuite.FixtureAnyFunSuiteLike
 import org.scalatest.{Outcome, Tag}
@@ -56,30 +57,38 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     withFixture(test.toNoArgTest(setup))
   }
 
-  def initiateSplice(f: FixtureParam) = {
+  def initiateSplice(f: FixtureParam, spliceIn_opt: Option[SpliceIn] = None, spliceOut_opt: Option[SpliceOut] = None) = {
     import f._
 
     val sender = TestProbe()
-    val cmd = CMD_SPLICE_IN(sender.ref, 500_000 sat)
+    val cmd = CMD_SPLICE(sender.ref, spliceIn_opt, spliceOut_opt)
     alice ! cmd
     alice2bob.expectMsgType[SpliceInit]
     alice2bob.forward(bob)
     bob2alice.expectMsgType[SpliceAck]
     bob2alice.forward(alice)
-    sender.expectMsgType[RES_SUCCESS[CMD_SPLICE_IN]]
+    sender.expectMsgType[RES_SUCCESS[CMD_SPLICE]]
 
     alice2bob.expectMsgType[TxAddInput]
     alice2bob.forward(bob)
     bob2alice.expectMsgType[TxComplete]
     bob2alice.forward(alice)
-    alice2bob.expectMsgType[TxAddInput]
-    alice2bob.forward(bob)
-    bob2alice.expectMsgType[TxComplete]
-    bob2alice.forward(alice)
-    alice2bob.expectMsgType[TxAddOutput]
-    alice2bob.forward(bob)
-    bob2alice.expectMsgType[TxComplete]
-    bob2alice.forward(alice)
+    if (spliceIn_opt.isDefined) {
+      alice2bob.expectMsgType[TxAddInput]
+      alice2bob.forward(bob)
+      bob2alice.expectMsgType[TxComplete]
+      bob2alice.forward(alice)
+      alice2bob.expectMsgType[TxAddOutput]
+      alice2bob.forward(bob)
+      bob2alice.expectMsgType[TxComplete]
+      bob2alice.forward(alice)
+    }
+    if (spliceOut_opt.isDefined) {
+      alice2bob.expectMsgType[TxAddOutput]
+      alice2bob.forward(bob)
+      bob2alice.expectMsgType[TxComplete]
+      bob2alice.forward(alice)
+    }
     alice2bob.expectMsgType[TxAddOutput]
     alice2bob.forward(bob)
     bob2alice.expectMsgType[TxComplete]
@@ -90,6 +99,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     bob2alice.forward(alice)
     alice2bob.expectMsgType[CommitSig]
     alice2bob.forward(bob)
+
     bob2alice.expectMsgType[TxSignatures]
     bob2alice.forward(alice)
     alice2bob.expectMsgType[TxSignatures]
@@ -101,7 +111,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     awaitCond(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.asInstanceOf[DualFundedUnconfirmedFundingTx].sharedTx.isInstanceOf[FullySignedSharedTransaction])
   }
 
-  test("recv CMD_SPLICE_IN") { f =>
+  test("recv CMD_SPLICE (splice-in)") { f =>
     import f._
 
     val initialState = alice.stateData.asInstanceOf[DATA_NORMAL]
@@ -109,11 +119,28 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
     assert(initialState.commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
 
-    initiateSplice(f)
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
 
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.capacity == 2_000_000.sat)
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toLocal == 1_300_000_000.msat)
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
+  }
+
+  test("recv CMD_SPLICE (splice-out)") { f =>
+    import f._
+
+    val initialState = alice.stateData.asInstanceOf[DATA_NORMAL]
+    assert(initialState.commitments.latest.capacity == 1_500_000.sat)
+    assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
+    assert(initialState.commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
+
+    initiateSplice(f, spliceOut_opt = Some(SpliceOut(100_000 sat, ByteVector32.Zeroes)))
+
+//    val feerate = TestConstants.Alice.nodeParams.onChainFeeConf.feeEstimator.getFeeratePerKw(TestConstants.Alice.nodeParams.onChainFeeConf.feeTargets.fundingBlockTarget)
+//    val miningFee = Transactions.weight2fee(feerate, 600)
+//    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.capacity == 1_400_000.sat - miningFee)
+//    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toLocal == 700_000_000.msat - miningFee)
+//    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
   }
 
   test("recv WatchFundingConfirmedTriggered with splice in progress", Tag(NoMaxHtlcValueInFlight)) { f =>
@@ -127,7 +154,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     sender.expectMsgType[RES_ADD_FAILED[_]]
     alice2bob.expectNoMessage()
 
-    initiateSplice(f)
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
     alice2blockchain.expectMsgType[WatchFundingConfirmed]
     alice2blockchain.expectNoMessage()
     alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get)
@@ -153,13 +180,13 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
   test("recv WatchFundingConfirmedTriggered with two unconfirmed splice txs", Tag(NoMaxHtlcValueInFlight)) { f =>
     import f._
 
-    initiateSplice(f)
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
     val watchConfirmed1 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
     alice2blockchain.expectNoMessage()
     val fundingTx1 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
     assert(fundingTx1.txid == watchConfirmed1.txId)
 
-    initiateSplice(f)
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
     // we're not putting a watch confirm immediately for the second watch
     alice2blockchain.expectNoMessage()
     val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
@@ -182,7 +209,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
 
   test("recv CMD_ADD_HTLC with multiple commitments") { f =>
     import f._
-    initiateSplice(f)
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
     val sender = TestProbe()
     alice ! CMD_ADD_HTLC(sender.ref, 500000 msat, randomBytes32(), CltvExpiryDelta(144).toCltvExpiry(currentBlockHeight), TestConstants.emptyOnionPacket, None, localOrigin(sender.ref))
     sender.expectMsgType[RES_SUCCESS[CMD_ADD_HTLC]]
