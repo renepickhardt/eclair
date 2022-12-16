@@ -18,7 +18,7 @@ package fr.acinq.eclair.channel
 
 import akka.actor.{ActorRef, PossiblyHarmful, typed}
 import fr.acinq.bitcoin.scalacompat.Crypto.PublicKey
-import fr.acinq.bitcoin.scalacompat.{ByteVector32, DeterministicWallet, OutPoint, Satoshi, Transaction}
+import fr.acinq.bitcoin.scalacompat.{ByteVector32, DeterministicWallet, OutPoint, Satoshi, SatoshiLong, Transaction}
 import fr.acinq.eclair.blockchain.fee.FeeratePerKw
 import fr.acinq.eclair.channel.LocalFundingStatus.DualFundedUnconfirmedFundingTx
 import fr.acinq.eclair.channel.fund.InteractiveTxBuilder
@@ -201,7 +201,13 @@ final case class CMD_CLOSE(replyTo: ActorRef, scriptPubKey: Option[ByteVector], 
 final case class CMD_FORCECLOSE(replyTo: ActorRef) extends CloseCommand
 
 final case class CMD_BUMP_FUNDING_FEE(replyTo: ActorRef, targetFeerate: FeeratePerKw, lockTime: Long) extends HasReplyToCommand
-final case class CMD_SPLICE_IN(replyTo: ActorRef, additionalLocalFunding: Satoshi, pushAmount: MilliSatoshi = 0L.msat) extends HasReplyToCommand
+case class SpliceIn(additionalLocalFunding: Satoshi, pushAmount: MilliSatoshi = 0.msat)
+case class SpliceOut(amount: Satoshi, pubKeyScript: ByteVector)
+final case class CMD_SPLICE(replyTo: ActorRef, spliceIn_opt: Option[SpliceIn], spliceOut_opt: Option[SpliceOut]) extends HasReplyToCommand {
+  require(spliceIn_opt.isDefined || spliceOut_opt.isDefined, "there must be a splice-in or a splice-out")
+  val additionalLocalFunding: Satoshi = spliceIn_opt.map(_.additionalLocalFunding).getOrElse(0L.sat)
+  val pushAmount: MilliSatoshi = spliceIn_opt.map(_.pushAmount).getOrElse(0L.msat)
+}
 final case class CMD_UPDATE_RELAY_FEE(replyTo: ActorRef, feeBase: MilliSatoshi, feeProportionalMillionths: Long, cltvExpiryDelta_opt: Option[CltvExpiryDelta]) extends HasReplyToCommand
 final case class CMD_GET_CHANNEL_STATE(replyTo: ActorRef) extends HasReplyToCommand
 final case class CMD_GET_CHANNEL_DATA(replyTo: ActorRef) extends HasReplyToCommand
@@ -446,7 +452,7 @@ object RbfStatus {
 sealed trait SpliceStatus
 object SpliceStatus {
   case object NoSplice extends SpliceStatus
-  case class SpliceRequested(cmd: CMD_SPLICE_IN, init: SpliceInit) extends SpliceStatus
+  case class SpliceRequested(cmd: CMD_SPLICE, init: SpliceInit) extends SpliceStatus
   case class SpliceInProgress(splice: typed.ActorRef[InteractiveTxBuilder.Command]) extends SpliceStatus
   case object SpliceAborted extends SpliceStatus
 }
