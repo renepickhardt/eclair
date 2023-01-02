@@ -817,6 +817,8 @@ object Transactions {
     }
   }
 
+  def findPubKeyScriptIndex(tx: Transaction, pubkeyScript: Option[ByteVector]): Either[TxGenerationSkipped, Int] = pubkeyScript.map(p => findPubKeyScriptIndex(tx, p)).getOrElse(Left(OutputNotFound))
+
   def findPubKeyScriptIndexes(tx: Transaction, pubkeyScript: ByteVector): Either[TxGenerationSkipped, Seq[Int]] = {
     val outputIndexes = tx.txOut.zipWithIndex.collect {
       case (txOut, index) if txOut.publicKeyScript == pubkeyScript => index

@@ -563,7 +563,7 @@ case class LocalParams(nodeId: PublicKey,
                        toSelfDelay: CltvExpiryDelta,
                        maxAcceptedHtlcs: Int,
                        isInitiator: Boolean,
-                       defaultFinalScriptPubKey: ByteVector,
+                       defaultFinalScriptPubKey: Option[ByteVector],
                        walletStaticPaymentBasepoint: Option[PublicKey],
                        initFeatures: Features[InitFeature])
 
