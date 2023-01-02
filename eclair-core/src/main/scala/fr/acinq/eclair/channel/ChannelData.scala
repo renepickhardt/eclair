@@ -438,6 +438,8 @@ case object Nothing extends TransientChannelData {
 sealed trait PersistentChannelData extends ChannelData {
   val channelId: ByteVector32 = commitments.channelId
   def commitments: Commitments
+
+  def updateFinalScriptPubkey(pubkeyScript: ByteVector): PersistentChannelData
 }
 
 final case class DATA_WAIT_FOR_OPEN_CHANNEL(initFundee: INPUT_INIT_CHANNEL_NON_INITIATOR) extends TransientChannelData {
@@ -487,10 +489,16 @@ final case class DATA_WAIT_FOR_FUNDING_CONFIRMED(commitments: Commitments,
                                                  fundingTx_opt: Option[Transaction],
                                                  waitingSince: BlockHeight, // how long have we been waiting for the funding tx to confirm
                                                  deferred: Option[ChannelReady],
-                                                 lastSent: Either[FundingCreated, FundingSigned]) extends PersistentChannelData
+                                                 lastSent: Either[FundingCreated, FundingSigned]) extends PersistentChannelData {
+override def updateFinalScriptPubkey(pubkeyScript:  ByteVector): PersistentChannelData = this.copy(commitments = this.commitments.copy(localParams = this.commitments.localParams.copy(defaultFinalScriptPubKey = pubkeyScript)))
+}
+
 final case class DATA_WAIT_FOR_CHANNEL_READY(commitments: Commitments,
                                              shortIds: ShortIds,
-                                             lastSent: ChannelReady) extends PersistentChannelData
+                                             lastSent: ChannelReady) extends PersistentChannelData {
+  override def updateFinalScriptPubkey(pubkeyScript:  ByteVector): PersistentChannelData = this.copy(commitments = this.commitments.copy(localParams = this.commitments.localParams.copy(defaultFinalScriptPubKey = pubkeyScript)))
+}
+
 
 final case class DATA_WAIT_FOR_OPEN_DUAL_FUNDED_CHANNEL(init: INPUT_INIT_CHANNEL_NON_INITIATOR) extends TransientChannelData {
   val channelId: ByteVector32 = init.temporaryChannelId
@@ -512,10 +520,16 @@ final case class DATA_WAIT_FOR_DUAL_FUNDING_CONFIRMED(commitments: Commitments,
                                                       waitingSince: BlockHeight, // how long have we been waiting for a funding tx to confirm
                                                       lastChecked: BlockHeight, // last time we checked if the channel was double-spent
                                                       rbfStatus: RbfStatus,
-                                                      deferred: Option[ChannelReady]) extends PersistentChannelData
+                                                      deferred: Option[ChannelReady]) extends PersistentChannelData {
+  override def updateFinalScriptPubkey(pubkeyScript:  ByteVector): PersistentChannelData = this.copy(commitments = this.commitments.copy(localParams = this.commitments.localParams.copy(defaultFinalScriptPubKey = pubkeyScript)))
+}
+
 final case class DATA_WAIT_FOR_DUAL_FUNDING_READY(commitments: Commitments,
                                                   shortIds: ShortIds,
-                                                  lastSent: ChannelReady) extends PersistentChannelData
+                                                  lastSent: ChannelReady) extends PersistentChannelData {
+  override def updateFinalScriptPubkey(pubkeyScript:  ByteVector): PersistentChannelData = this.copy(commitments = this.commitments.copy(localParams = this.commitments.localParams.copy(defaultFinalScriptPubKey = pubkeyScript)))
+}
+
 
 final case class DATA_NORMAL(commitments: Commitments,
                              shortIds: ShortIds,
@@ -523,14 +537,20 @@ final case class DATA_NORMAL(commitments: Commitments,
                              channelUpdate: ChannelUpdate,
                              localShutdown: Option[Shutdown],
                              remoteShutdown: Option[Shutdown],
-                             closingFeerates: Option[ClosingFeerates]) extends PersistentChannelData
-final case class DATA_SHUTDOWN(commitments: Commitments, localShutdown: Shutdown, remoteShutdown: Shutdown, closingFeerates: Option[ClosingFeerates]) extends PersistentChannelData
+                             closingFeerates: Option[ClosingFeerates]) extends PersistentChannelData {
+  override def updateFinalScriptPubkey(pubkeyScript:  ByteVector): PersistentChannelData = this.copy(commitments = this.commitments.copy(localParams = this.commitments.localParams.copy(defaultFinalScriptPubKey = pubkeyScript)))
+}
+final case class DATA_SHUTDOWN(commitments: Commitments, localShutdown: Shutdown, remoteShutdown: Shutdown, closingFeerates: Option[ClosingFeerates]) extends PersistentChannelData {
+  override def updateFinalScriptPubkey(pubkeyScript:  ByteVector): PersistentChannelData = this.copy(commitments = this.commitments.copy(localParams = this.commitments.localParams.copy(defaultFinalScriptPubKey = pubkeyScript)))
+}
+
 final case class DATA_NEGOTIATING(commitments: Commitments,
                                   localShutdown: Shutdown, remoteShutdown: Shutdown,
                                   closingTxProposed: List[List[ClosingTxProposed]], // one list for every negotiation (there can be several in case of disconnection)
                                   bestUnpublishedClosingTx_opt: Option[ClosingTx]) extends PersistentChannelData {
   require(closingTxProposed.nonEmpty, "there must always be a list for the current negotiation")
   require(!commitments.localParams.isInitiator || closingTxProposed.forall(_.nonEmpty), "initiator must have at least one closing signature for every negotiation attempt because it initiates the closing")
+  override def updateFinalScriptPubkey(pubkeyScript:  ByteVector): DATA_NEGOTIATING = this.copy(commitments = this.commitments.copy(localParams = this.commitments.localParams.copy(defaultFinalScriptPubKey = pubkeyScript)))
 }
 final case class DATA_CLOSING(commitments: Commitments,
                               fundingTx: Option[UnconfirmedFundingTx],
@@ -545,9 +565,12 @@ final case class DATA_CLOSING(commitments: Commitments,
                               revokedCommitPublished: List[RevokedCommitPublished] = Nil) extends PersistentChannelData {
   val spendingTxs: List[Transaction] = mutualClosePublished.map(_.tx) ::: localCommitPublished.map(_.commitTx).toList ::: remoteCommitPublished.map(_.commitTx).toList ::: nextRemoteCommitPublished.map(_.commitTx).toList ::: futureRemoteCommitPublished.map(_.commitTx).toList ::: revokedCommitPublished.map(_.commitTx)
   require(spendingTxs.nonEmpty, "there must be at least one tx published in this state")
+  override def updateFinalScriptPubkey(pubkeyScript:  ByteVector): PersistentChannelData = this.copy(commitments = this.commitments.copy(localParams = this.commitments.localParams.copy(defaultFinalScriptPubKey = pubkeyScript)))
 }
 
-final case class DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT(commitments: Commitments, remoteChannelReestablish: ChannelReestablish) extends PersistentChannelData
+final case class DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT(commitments: Commitments, remoteChannelReestablish: ChannelReestablish) extends PersistentChannelData {
+  override def updateFinalScriptPubkey(pubkeyScript:  ByteVector): DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT = this.copy(commitments = this.commitments.copy(localParams = this.commitments.localParams.copy(defaultFinalScriptPubKey = pubkeyScript)))
+}
 
 /**
  * @param initFeatures current connection features, or last features used if the channel is disconnected. Note that these

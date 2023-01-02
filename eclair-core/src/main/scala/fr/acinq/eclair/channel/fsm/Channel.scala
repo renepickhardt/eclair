@@ -20,8 +20,9 @@ import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.scaladsl.adapter.{ClassicActorContextOps, actorRefAdapter}
 import akka.actor.{Actor, ActorContext, ActorRef, FSM, OneForOneStrategy, PossiblyHarmful, Props, SupervisorStrategy, typed}
 import akka.event.Logging.MDC
+import akka.pattern.pipe
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey}
-import fr.acinq.bitcoin.scalacompat.{ByteVector32, Satoshi, SatoshiLong, Transaction}
+import fr.acinq.bitcoin.scalacompat.{ByteVector32, Satoshi, SatoshiLong, Script, Transaction}
 import fr.acinq.eclair.Logs.LogCategory
 import fr.acinq.eclair._
 import fr.acinq.eclair.blockchain.OnChainWallet.MakeFundingTxResponse
@@ -47,6 +48,7 @@ import fr.acinq.eclair.router.Announcements
 import fr.acinq.eclair.transactions.Transactions.ClosingTx
 import fr.acinq.eclair.transactions._
 import fr.acinq.eclair.wire.protocol._
+import scodec.bits.ByteVector
 
 import scala.collection.immutable.Queue
 import scala.concurrent.ExecutionContext
@@ -97,7 +99,7 @@ object Channel {
     }
   }
 
-  def props(nodeParams: NodeParams, wallet: OnChainChannelFunder, remoteNodeId: PublicKey, blockchain: typed.ActorRef[ZmqWatcher.Command], relayer: ActorRef, txPublisherFactory: TxPublisherFactory, origin_opt: Option[ActorRef]): Props =
+  def props(nodeParams: NodeParams, wallet: OnChainChannelFunder with OnChainAddressGenerator, remoteNodeId: PublicKey, blockchain: typed.ActorRef[ZmqWatcher.Command], relayer: ActorRef, txPublisherFactory: TxPublisherFactory, origin_opt: Option[ActorRef]): Props =
     Props(new Channel(nodeParams, wallet, remoteNodeId, blockchain, relayer, txPublisherFactory, origin_opt))
 
   // see https://github.com/lightningnetwork/lightning-rfc/blob/master/07-routing-gossip.md#requirements
@@ -162,9 +164,10 @@ object Channel {
   }
   // @formatter:on
 
+  private[channel] case class WatchFundingSpentTriggeredExtended(tx: Transaction, pubkeyScript: ByteVector)
 }
 
-class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder, val remoteNodeId: PublicKey, val blockchain: typed.ActorRef[ZmqWatcher.Command], val relayer: ActorRef, val txPublisherFactory: Channel.TxPublisherFactory, val origin_opt: Option[ActorRef] = None)(implicit val ec: ExecutionContext = ExecutionContext.Implicits.global)
+class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with OnChainAddressGenerator, val remoteNodeId: PublicKey, val blockchain: typed.ActorRef[ZmqWatcher.Command], val relayer: ActorRef, val txPublisherFactory: Channel.TxPublisherFactory, val origin_opt: Option[ActorRef] = None)(implicit val ec: ExecutionContext = ExecutionContext.Implicits.global)
   extends FSM[ChannelState, ChannelData]
     with FSMDiagnosticActorLogging[ChannelState, ChannelData]
     with ChannelOpenSingleFunded
@@ -701,11 +704,11 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder, val 
           goto(NORMAL) using d.copy(channelUpdate = channelUpdate1) storing()
       }
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_NORMAL) if tx.txid == d.commitments.remoteCommit.txid => handleRemoteSpentCurrent(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_NORMAL) if tx.txid == d.commitments.remoteCommit.txid => handleRemoteSpentCurrent(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_NORMAL) if d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid) => handleRemoteSpentNext(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_NORMAL) if d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid) => handleRemoteSpentNext(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_NORMAL) => handleRemoteSpentOther(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_NORMAL) => handleRemoteSpentOther(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
     case Event(INPUT_DISCONNECTED, d: DATA_NORMAL) =>
       // we cancel the timer that would have made us send the enabled update after reconnection (flappy channel protection)
@@ -908,11 +911,11 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder, val 
 
     case Event(c: CurrentFeerates, d: DATA_SHUTDOWN) => handleCurrentFeerate(c, d)
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_SHUTDOWN) if tx.txid == d.commitments.remoteCommit.txid => handleRemoteSpentCurrent(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_SHUTDOWN) if tx.txid == d.commitments.remoteCommit.txid => handleRemoteSpentCurrent(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_SHUTDOWN) if d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid) => handleRemoteSpentNext(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_SHUTDOWN) if d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid) => handleRemoteSpentNext(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_SHUTDOWN) => handleRemoteSpentOther(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_SHUTDOWN) => handleRemoteSpentOther(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
     case Event(c: CMD_CLOSE, d: DATA_SHUTDOWN) =>
       c.feerates match {
@@ -1016,20 +1019,20 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder, val 
         case Left(cause) => handleLocalError(cause, d, Some(c))
       }
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_NEGOTIATING) if d.closingTxProposed.flatten.exists(_.unsignedTx.tx.txid == tx.txid) =>
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_NEGOTIATING) if d.closingTxProposed.flatten.exists(_.unsignedTx.tx.txid == tx.txid) =>
       // they can publish a closing tx with any sig we sent them, even if we are not done negotiating
-      handleMutualClose(getMutualClosePublished(tx, d.closingTxProposed), Left(d))
+      handleMutualClose(getMutualClosePublished(tx, d.closingTxProposed), Left(d.updateFinalScriptPubkey(pubkeyScript)))
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_NEGOTIATING) if d.bestUnpublishedClosingTx_opt.exists(_.tx.txid == tx.txid) =>
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_NEGOTIATING) if d.bestUnpublishedClosingTx_opt.exists(_.tx.txid == tx.txid) =>
       log.warning(s"looks like a mutual close tx has been published from the outside of the channel: closingTxId=${tx.txid}")
       // if we were in the process of closing and already received a closing sig from the counterparty, it's always better to use that
       handleMutualClose(d.bestUnpublishedClosingTx_opt.get, Left(d))
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_NEGOTIATING) if tx.txid == d.commitments.remoteCommit.txid => handleRemoteSpentCurrent(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_NEGOTIATING) if tx.txid == d.commitments.remoteCommit.txid => handleRemoteSpentCurrent(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_NEGOTIATING) if d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid) => handleRemoteSpentNext(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_NEGOTIATING) if d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid) => handleRemoteSpentNext(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_NEGOTIATING) => handleRemoteSpentOther(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_NEGOTIATING) => handleRemoteSpentOther(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
     case Event(c: CMD_CLOSE, d: DATA_NEGOTIATING) =>
       c.feerates match {
@@ -1124,7 +1127,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder, val 
           }
       }
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_CLOSING) =>
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_CLOSING) =>
       if (d.mutualClosePublished.exists(_.tx.txid == tx.txid)) {
         // we already know about this tx, probably because we have published it ourselves after successful negotiation
         stay()
@@ -1146,13 +1149,13 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder, val 
         stay()
       } else if (tx.txid == d.commitments.remoteCommit.txid) {
         // counterparty may attempt to spend its last commit tx at any time
-        handleRemoteSpentCurrent(tx, d)
+        handleRemoteSpentCurrent(tx, d.updateFinalScriptPubkey(pubkeyScript))
       } else if (d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid)) {
         // counterparty may attempt to spend its last commit tx at any time
-        handleRemoteSpentNext(tx, d)
+        handleRemoteSpentNext(tx, d.updateFinalScriptPubkey(pubkeyScript))
       } else {
         // counterparty may attempt to spend a revoked commit tx at any time
-        handleRemoteSpentOther(tx, d)
+        handleRemoteSpentOther(tx, d.updateFinalScriptPubkey(pubkeyScript))
       }
 
     case Event(WatchOutputSpentTriggered(tx), d: DATA_CLOSING) =>
@@ -1341,13 +1344,13 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder, val 
     case Event(WatchFundingSpentTriggered(tx), d: DATA_NEGOTIATING) if d.closingTxProposed.flatten.exists(_.unsignedTx.tx.txid == tx.txid) =>
       handleMutualClose(getMutualClosePublished(tx, d.closingTxProposed), Left(d))
 
-    case Event(WatchFundingSpentTriggered(tx), d: PersistentChannelData) if tx.txid == d.commitments.remoteCommit.txid => handleRemoteSpentCurrent(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: PersistentChannelData) if tx.txid == d.commitments.remoteCommit.txid => handleRemoteSpentCurrent(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: PersistentChannelData) if d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid) => handleRemoteSpentNext(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: PersistentChannelData) if d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid) => handleRemoteSpentNext(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT) => handleRemoteSpentFuture(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT) => handleRemoteSpentFuture(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: PersistentChannelData) => handleRemoteSpentOther(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: PersistentChannelData) => handleRemoteSpentOther(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
   })
 
@@ -1542,17 +1545,17 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder, val 
 
     case Event(WatchFundingSpentTriggered(tx), d: DATA_NEGOTIATING) if d.closingTxProposed.flatten.exists(_.unsignedTx.tx.txid == tx.txid) => handleMutualClose(getMutualClosePublished(tx, d.closingTxProposed), Left(d))
 
-    case Event(WatchFundingSpentTriggered(tx), d: PersistentChannelData) if tx.txid == d.commitments.remoteCommit.txid => handleRemoteSpentCurrent(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: PersistentChannelData) if tx.txid == d.commitments.remoteCommit.txid => handleRemoteSpentCurrent(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: PersistentChannelData) if d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid) => handleRemoteSpentNext(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: PersistentChannelData) if d.commitments.remoteNextCommitInfo.left.toOption.exists(_.nextRemoteCommit.txid == tx.txid) => handleRemoteSpentNext(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
-    case Event(WatchFundingSpentTriggered(tx), d: PersistentChannelData) => handleRemoteSpentOther(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: PersistentChannelData) => handleRemoteSpentOther(tx, d.updateFinalScriptPubkey(pubkeyScript))
 
     case Event(e: Error, d: PersistentChannelData) => handleRemoteError(e, d)
   })
 
   when(WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT)(handleExceptions {
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT) => handleRemoteSpentFuture(tx, d)
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT) => handleRemoteSpentFuture(tx, d.updateFinalScriptPubkey(pubkeyScript))
   })
 
   private def errorStateHandler: StateFunction = {
@@ -1634,9 +1637,13 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder, val 
     // peer doesn't cancel the timer
     case Event(TickChannelOpenTimeout, _) => stay()
 
-    case Event(WatchFundingSpentTriggered(tx), d: PersistentChannelData) if tx.txid == d.commitments.localCommit.commitTxAndRemoteSig.commitTx.tx.txid =>
+    case Event(WatchFundingSpentTriggered(tx), d: PersistentChannelData) =>
+      wallet.getReceiveAddress("").map(address => WatchFundingSpentTriggeredExtended(tx, Script.write(addressToPublicKeyScript(address, nodeParams.chainHash)))).pipeTo(self)
+      stay()
+
+    case Event(WatchFundingSpentTriggeredExtended(tx, pubkeyScript), d: PersistentChannelData) if tx.txid == d.commitments.localCommit.commitTxAndRemoteSig.commitTx.tx.txid =>
       log.warning(s"processing local commit spent in catch-all handler")
-      spendLocalCurrent(d)
+      spendLocalCurrent(d.updateFinalScriptPubkey(pubkeyScript))
   }
 
   onTransition {
