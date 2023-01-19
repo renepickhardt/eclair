@@ -69,7 +69,7 @@ class PaymentInitiator(nodeParams: NodeParams, outgoingPaymentFactory: PaymentIn
       sender() ! paymentId
       val paymentCfg = SendPaymentConfig(paymentId, paymentId, r.externalId, r.paymentHash, r.recipientAmount, r.recipientNodeId, Upstream.Local(paymentId), None, storeInDb = true, publishEvent = true, recordPathFindingMetrics = r.recordPathFindingMetrics, Nil)
       val finalExpiry = nodeParams.paymentFinalExpiry.computeFinalExpiry(nodeParams.currentBlockHeight, Channel.MIN_CLTV_EXPIRY_DELTA)
-      val finalPayload = FinalPayload.Standard(TlvStream(Seq(OnionPaymentPayloadTlv.AmountToForward(r.recipientAmount), OnionPaymentPayloadTlv.OutgoingCltv(finalExpiry), OnionPaymentPayloadTlv.PaymentData(randomBytes32(), r.recipientAmount), OnionPaymentPayloadTlv.KeySend(r.paymentPreimage)), r.userCustomTlvs))
+      val finalPayload = FinalPayload.Standard(TlvStream(Seq(OnionPaymentPayloadTlv.AmountToForward(r.recipientAmount), OnionPaymentPayloadTlv.OutgoingCltv(finalExpiry), OnionPaymentPayloadTlv.KeySend(r.paymentPreimage)), r.userCustomTlvs))
       val fsm = outgoingPaymentFactory.spawnOutgoingPayment(context, paymentCfg)
       fsm ! PaymentLifecycle.SendPaymentToNode(self, r.recipientNodeId, finalPayload, r.maxAttempts, routeParams = r.routeParams)
       context become main(pending + (paymentId -> PendingSpontaneousPayment(sender(), r)))
