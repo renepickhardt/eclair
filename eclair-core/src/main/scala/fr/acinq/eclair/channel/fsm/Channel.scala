@@ -354,6 +354,19 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
    */
 
   when(NORMAL)(handleExceptions {
+    case Event(c: ForbiddenCommandDuringSplice, d: DATA_NORMAL) if d.spliceStatus.isInstanceOf[SpliceStatus.SpliceRequested] || d.spliceStatus.isInstanceOf[SpliceStatus.SpliceInProgress] =>
+      val error = ForbiddenDuringSplice(d.channelId, c.getClass.getSimpleName)
+      c match {
+        case c: CMD_ADD_HTLC => handleAddHtlcCommandError(c, error, Some(d.channelUpdate))
+        case _ => handleCommandError(error, c)
+      }
+
+    case Event(msg: ForbiddenMessageDuringSplice, d: DATA_NORMAL) if d.spliceStatus.isInstanceOf[SpliceStatus.SpliceInProgress] =>
+      // In case of a race between our splice_init and a forbidden message from our peer, we accept their message, because
+      // we know they are going to reject our splice attempt
+      val error = ForbiddenDuringSplice(d.channelId, msg.getClass.getSimpleName)
+      handleLocalError(error, d, Some(msg))
+
     case Event(c: CMD_ADD_HTLC, d: DATA_NORMAL) if d.localShutdown.isDefined || d.remoteShutdown.isDefined =>
       // note: spec would allow us to keep sending new htlcs after having received their shutdown (and not sent ours)
       // but we want to converge as fast as possible and they would probably not route them anyway
