@@ -1568,13 +1568,27 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
           var sendQueue = Queue.empty[LightningMessage]
           // normal case, our data is up-to-date
 
-          if (channelReestablish.nextLocalCommitmentNumber == 1 && d.commitments.localCommitIndex == 0) {
+          if (d.commitments.latest.fundingTxIndex == 0 && channelReestablish.nextLocalCommitmentNumber == 1 && d.commitments.localCommitIndex == 0) {
             // If next_local_commitment_number is 1 in both the channel_reestablish it sent and received, then the node MUST retransmit channel_ready, otherwise it MUST NOT
             log.debug("re-sending channelReady")
             val channelKeyPath = keyManager.keyPath(d.commitments.params.localParams, d.commitments.params.channelConfig)
             val nextPerCommitmentPoint = keyManager.commitmentPoint(channelKeyPath, 1)
             val channelReady = ChannelReady(d.commitments.channelId, nextPerCommitmentPoint)
             sendQueue = sendQueue :+ channelReady
+          } else {
+            // NB: there is a key difference between channel_ready and splice_confirmed:
+            // - channel_ready: a non-zero commitment index implies that both sides have seen the channel_ready
+            // - splice_confirmed: the commitment index can be updated as long as it is compatible with all splices, so
+            //   we must keep sending our splice_confirmed for splice N until we receive the splice_confirmed for splice N+1
+            val spliceConfirmed = d.commitments.active
+              .reverse // we send splice_confirmed in the order splices were created
+              .filter(c => c.fundingTxIndex > 0) // only consider splice txs
+              .map(_.localFundingStatus)
+              .collect { case tx: LocalFundingStatus.ConfirmedFundingTx =>
+                log.debug(s"re-sending SpliceLocked for fundingTxid=${tx.tx.txid}")
+                SpliceLocked(d.channelId, tx.tx.txid)
+              }
+            sendQueue = sendQueue ++ spliceConfirmed
           }
 
           // we may need to retransmit updates and/or commit_sig and/or revocation
