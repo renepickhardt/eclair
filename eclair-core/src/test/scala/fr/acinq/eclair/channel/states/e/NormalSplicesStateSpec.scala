@@ -20,7 +20,7 @@ import akka.testkit.TestProbe
 import com.softwaremill.quicklens.ModifyPimp
 import fr.acinq.bitcoin.scalacompat.{ByteVector32, SatoshiLong}
 import fr.acinq.eclair._
-import fr.acinq.eclair.blockchain.bitcoind.ZmqWatcher.{WatchFundingConfirmed, WatchFundingConfirmedTriggered, WatchFundingSpent}
+import fr.acinq.eclair.blockchain.bitcoind.ZmqWatcher.{WatchFundingConfirmed, WatchFundingConfirmedTriggered, WatchFundingDeeplyBuried, WatchFundingSpent}
 import fr.acinq.eclair.blockchain.fee._
 import fr.acinq.eclair.channel.LocalFundingStatus.DualFundedUnconfirmedFundingTx
 import fr.acinq.eclair.channel._
@@ -279,5 +279,129 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     bob2alice.forward(alice, fakeHtlc)
     alice2bob.expectMsgType[Error]
   }
+
+  test("re-send splice_locked on reconnection") { f =>
+    import f._
+
+    def disconnect() = {
+      alice ! INPUT_DISCONNECTED
+      bob ! INPUT_DISCONNECTED
+      awaitCond(alice.stateName == OFFLINE)
+      awaitCond(bob.stateName == OFFLINE)
+    }
+
+    def reconnect() = {
+      val aliceInit = Init(alice.stateData.asInstanceOf[PersistentChannelData].commitments.params.localParams.initFeatures)
+      val bobInit = Init(bob.stateData.asInstanceOf[PersistentChannelData].commitments.params.localParams.initFeatures)
+      alice ! INPUT_RECONNECTED(alice2bob.ref, aliceInit, bobInit)
+      bob ! INPUT_RECONNECTED(bob2alice.ref, bobInit, aliceInit)
+      alice2bob.expectMsgType[ChannelReestablish]
+      alice2bob.forward(bob)
+      bob2alice.expectMsgType[ChannelReestablish]
+      bob2alice.forward(alice)
+
+      alice2blockchain.expectMsgType[WatchFundingDeeplyBuried]
+      bob2blockchain.expectMsgType[WatchFundingDeeplyBuried]
+    }
+
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
+    val fundingTx1 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    val watchConfirmed1a = alice2blockchain.expectMsgType[WatchFundingConfirmed]
+    val watchConfirmed1b = bob2blockchain.expectMsgType[WatchFundingConfirmed]
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
+    val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    alice2bob.expectNoMessage()
+    bob2alice.expectNoMessage()
+    // we now have two unconfirmed splices
+
+    disconnect()
+    reconnect()
+
+    alice2bob.expectMsgType[ChannelUpdate]
+    alice2bob.forward(bob)
+    bob2alice.expectMsgType[ChannelUpdate]
+    bob2alice.forward(bob)
+
+    // channel_ready are not re-sent because the channel has already been used (for building splices)
+    alice2bob.expectNoMessage()
+    bob2alice.expectNoMessage()
+
+    // splice 1 confirms on alice's side
+    watchConfirmed1a.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx1.txid)
+    alice2bob.forward(bob)
+    alice2blockchain.expectMsgType[WatchFundingSpent]
+    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
+
+    alice2bob.ignoreMsg { case _: ChannelUpdate => true }
+    bob2alice.ignoreMsg { case _: ChannelUpdate => true }
+
+    disconnect()
+    reconnect()
+
+    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx1.txid)
+    alice2bob.forward(bob)
+
+    // splice 2 confirms on alice's side
+    watchConfirmed2.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
+    alice2bob.forward(bob)
+    alice2blockchain.expectMsgType[WatchFundingSpent]
+
+    disconnect()
+    reconnect()
+
+    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
+    alice2bob.forward(bob)
+    alice2bob.expectNoMessage()
+    bob2alice.expectNoMessage()
+
+    // splice 1 confirms on bob's side
+    watchConfirmed1b.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    assert(bob2alice.expectMsgType[SpliceLocked].fundingTxid == fundingTx1.txid)
+    bob2alice.forward(alice)
+    bob2blockchain.expectMsgType[WatchFundingSpent]
+    val watchConfirmed2b = bob2blockchain.expectMsgType[WatchFundingConfirmed]
+
+    disconnect()
+    reconnect()
+
+    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
+    alice2bob.forward(bob)
+    assert(bob2alice.expectMsgType[SpliceLocked].fundingTxid == fundingTx1.txid)
+    bob2alice.forward(alice)
+    alice2bob.expectNoMessage()
+    bob2alice.expectNoMessage()
+
+    // splice 2 confirms on bob's side
+    watchConfirmed2b.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    assert(bob2alice.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
+    bob2blockchain.expectMsgType[WatchFundingSpent]
+
+    // NB: we disconnect *before* transmitting the splice_confirmed to alice
+
+    disconnect()
+    reconnect()
+
+    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
+    alice2bob.forward(bob)
+    assert(bob2alice.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
+    // this time alice received the splice_confirmed for funding tx 2
+    bob2alice.forward(alice)
+    alice2bob.expectNoMessage()
+    bob2alice.expectNoMessage()
+
+    disconnect()
+    reconnect()
+
+    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
+    alice2bob.forward(bob)
+    assert(bob2alice.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
+    bob2alice.forward(alice)
+    alice2bob.expectNoMessage()
+    bob2alice.expectNoMessage()
+
+  }
+
 
 }
