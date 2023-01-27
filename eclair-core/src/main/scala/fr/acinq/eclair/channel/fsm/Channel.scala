@@ -1300,8 +1300,8 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
     case Event(w: WatchFundingConfirmedTriggered, d: DATA_CLOSING) =>
       acceptFundingTxConfirmed(w, d) match {
         case Right((commitments1, _)) =>
-          if (d.commitments.latest.fundingTxId == w.tx.txid) {
-            // The best funding tx candidate has been confirmed, alternative commitments have been pruned
+          if (d.commitments.latest.fundingTxId == commitments1.latest.fundingTxId) {
+            // We're still on the same splice history, nothing to do
             stay() using d.copy(commitments = commitments1) storing()
           } else {
             // This is a corner case where:
@@ -1317,7 +1317,6 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
             // Force-closing is our only option here, if we are in this state the channel was closing and it is too late
             // to negotiate a mutual close.
             log.info("channelId={} was confirmed at blockHeight={} txIndex={} with a previous funding txid={}", d.channelId, w.blockHeight, w.txIndex, w.tx.txid)
-            val commitment = commitments1.latest
             val d1 = d.copy(commitments = commitments1)
             spendLocalCurrent(d1)
           }
@@ -1356,10 +1355,33 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       } else if (tx.txIn.map(_.outPoint.txid).contains(d.commitments.latest.fundingTxId)) {
         // counterparty may attempt to spend a revoked commit tx at any time
         handleRemoteSpentOther(tx, d)
+      } else if (d.commitments.all.exists(c => tx.txIn.map(_.outPoint.txid).contains(c.fundingTxId))) {
+        log.warning(s"a commit tx for an older commitment has been published txid=${tx.txid}")
+        // this was for another commitments
+        blockchain ! WatchAlternativeCommitTxConfirmed(self, tx.txid, nodeParams.channelConf.minDepthBlocks)
+        stay()
       } else {
         log.warning(s"unrecognized tx=${tx.txid}")
-        // this was for another commitments
         stay()
+      }
+
+    case Event(WatchAlternativeCommitTxConfirmedTriggered(_, _, tx), d: DATA_CLOSING) =>
+      d.commitments.all
+        .find(c => tx.txIn.map(_.outPoint.txid).contains(c.fundingTxId)) match {
+        case Some(commitment) =>
+          log.info("hmm.... there has been a change of plan, a commit tx for fundingTxIndex={} fundingTxid={} has been confirmed", commitment.fundingTxIndex, commitment.fundingTxId)
+          val commitments1 = d.commitments.copy(
+            active = commitment +: Nil,
+            inactive = Nil
+          )
+          // we reset the state
+          val d1 = d.copy(commitments = commitments1)
+          // and we replay history
+          self ! WatchFundingSpentTriggered(tx)
+          stay() using d1 storing()
+        case None =>
+          log.warning(s"unrecognized alternative commit tx=${tx.txid}")
+          stay()
       }
 
     case Event(WatchOutputSpentTriggered(tx), d: DATA_CLOSING) =>
@@ -1722,15 +1744,9 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
     case Event(e: Error, d: PersistentChannelData) => handleRemoteError(e, d)
   })
 
-  when(WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT)(handleExceptions {
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT) => handleRemoteSpentFuture(tx, d)
-  })
+  when(WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT)(PartialFunction.empty[Event, State])
 
-  private def errorStateHandler: StateFunction = {
-    case Event(Symbol("nevermatches"), _) => stay() // we can't define a state with no event handler, so we put a dummy one here
-  }
-
-  when(ERR_INFORMATION_LEAK)(errorStateHandler)
+  when(ERR_INFORMATION_LEAK)(PartialFunction.empty[Event, State])
 
   whenUnhandled {
 
@@ -1871,8 +1887,6 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       log.warning(s"looks like a mutual close tx has been published from the outside of the channel: closingTxId=${tx.txid}")
       // if we were in the process of closing and already received a closing sig from the counterparty, it's always better to use that
       handleMutualClose(d.bestUnpublishedClosingTx_opt.get, Left(d))
-
-    case Event(WatchFundingSpentTriggered(tx), d: DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT) => handleRemoteSpentFuture(tx, d)
 
     case Event(WatchFundingSpentTriggered(tx), d: PersistentChannelData) =>
       if (d.commitments.active.map(_.fundingTxId).contains(tx.txid)) {
@@ -2157,9 +2171,9 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
         // we need to remember their commitment point in order to be able to claim our outputs
         handleOutdatedCommitment(channelReestablish, d)
       case res: Syncing.SyncResult.RemoteLying =>
-        log.error(s"counterparty is lying about us having an outdated commitment!!! ourLocalCommitmentNumber=${res.ourLocalCommitmentNumber} theirRemoteCommitmentNumber=${res.theirRemoteCommitmentNumber}")
-        // they are deliberately trying to fool us into thinking we have a late commitment
-        handleLocalError(InvalidRevokedCommitProof(d.channelId, res.ourLocalCommitmentNumber, res.theirRemoteCommitmentNumber, res.invalidPerCommitmentSecret), d, Some(channelReestablish))
+        log.error(s"counterparty claims that we have an outdated commitment, but they sent an invalid proof, so our commitment may or may not be revoked: ourLocalCommitmentNumber=${res.ourLocalCommitmentNumber} theirRemoteCommitmentNumber=${res.theirRemoteCommitmentNumber}")
+        // they are deliberately trying to fool us into thinking we have a late commitment, but we cannot risk publishing it ourselves, because it may really be revoked!
+        handleOutdatedCommitment(channelReestablish, d)
       case SyncResult.RemoteLate =>
         log.error("counterparty appears to be using an outdated commitment, they may request a force-close, standing by...")
         stay()
