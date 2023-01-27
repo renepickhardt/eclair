@@ -705,6 +705,8 @@ case class Commitments(params: ChannelParams,
   // We always use the last commitment that was created, to make sure we never go back in time.
   val latest = FullCommitment(params, changes, active.head.fundingTxIndex, active.head.localFundingStatus, active.head.remoteFundingStatus, active.head.localCommit, active.head.remoteCommit, active.head.nextRemoteCommit_opt)
 
+  val all: Seq[Commitment] = active ++ inactive
+
   def add(commitment: Commitment): Commitments = copy(active = commitment +: active)
 
   // @formatter:off

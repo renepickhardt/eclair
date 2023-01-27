@@ -16,15 +16,18 @@
 
 package fr.acinq.eclair.channel.states.e
 
+import akka.actor.ActorRef
 import akka.testkit.TestProbe
 import com.softwaremill.quicklens.ModifyPimp
 import fr.acinq.bitcoin.scalacompat.{ByteVector32, SatoshiLong}
 import fr.acinq.eclair._
-import fr.acinq.eclair.blockchain.bitcoind.ZmqWatcher.{WatchFundingConfirmed, WatchFundingConfirmedTriggered, WatchFundingDeeplyBuried, WatchFundingSpent}
+import fr.acinq.eclair.blockchain.bitcoind.ZmqWatcher._
 import fr.acinq.eclair.blockchain.fee._
+import fr.acinq.eclair.channel.Helpers.Closing.{LocalClose, RemoteClose}
 import fr.acinq.eclair.channel.LocalFundingStatus.DualFundedUnconfirmedFundingTx
 import fr.acinq.eclair.channel._
 import fr.acinq.eclair.channel.fund.InteractiveTxBuilder.FullySignedSharedTransaction
+import fr.acinq.eclair.channel.publish.TxPublisher.PublishFinalTx
 import fr.acinq.eclair.channel.states.ChannelStateTestsTags.NoMaxHtlcValueInFlight
 import fr.acinq.eclair.channel.states.{ChannelStateTestsBase, ChannelStateTestsTags}
 import fr.acinq.eclair.transactions.Transactions
@@ -401,6 +404,106 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice2bob.expectNoMessage()
     bob2alice.expectNoMessage()
 
+  }
+
+  test("force-close with multiple splices (simple)") { f =>
+    import f._
+
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
+    val fundingTx1 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    val watchConfirmed1 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
+    val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    alice2bob.expectNoMessage()
+    bob2alice.expectNoMessage()
+    alice2blockchain.expectNoMessage()
+    // we now have two unconfirmed splices
+
+    alice ! CMD_FORCECLOSE(ActorRef.noSender)
+    alice2bob.expectMsgType[Error]
+    val commitTx2 = alice2blockchain.expectMsgType[PublishFinalTx].tx
+    val claimMainDelayed2 = alice2blockchain.expectMsgType[PublishFinalTx].tx
+    val watchConfirmedCommit2 = alice2blockchain.expectMsgType[WatchTxConfirmed]
+    val watchConfirmedClaimMainDelayed2 = alice2blockchain.expectMsgType[WatchTxConfirmed]
+    alice ! WatchFundingSpentTriggered(commitTx2)
+    alice2blockchain.expectNoMessage()
+
+    // splice 1 confirms
+    watchConfirmed1.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    alice2bob.forward(bob)
+    alice2blockchain.expectMsgType[WatchFundingSpent]
+    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
+    alice2blockchain.expectNoMessage()
+
+    // splice 2 confirms
+    watchConfirmed2.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    alice2bob.forward(bob)
+    alice2blockchain.expectMsgType[WatchFundingSpent]
+    alice2blockchain.expectNoMessage()
+
+    // commit tx confirms
+    watchConfirmedCommit2.replyTo ! WatchTxConfirmedTriggered(BlockHeight(400000), 42, commitTx2)
+
+    // claim-main-delayed tx confirms
+    watchConfirmedClaimMainDelayed2.replyTo ! WatchTxConfirmedTriggered(BlockHeight(400000), 42, claimMainDelayed2)
+
+    // done
+    awaitCond(alice.stateName == CLOSED)
+    assert(Helpers.Closing.isClosed(alice.stateData.asInstanceOf[DATA_CLOSING], None).exists(_.isInstanceOf[LocalClose]))
+  }
+
+  test("force-close with multiple splices (previous remote wins)") { f =>
+    import f._
+
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
+    val fundingTx1 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    val watchConfirmed1 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
+    val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    alice2bob.expectNoMessage()
+    bob2alice.expectNoMessage()
+    alice2blockchain.expectNoMessage()
+    // we now have two unconfirmed splices
+
+    alice ! CMD_FORCECLOSE(ActorRef.noSender)
+    alice2bob.expectMsgType[Error]
+    val aliceCommitTx2 = alice2blockchain.expectMsgType[PublishFinalTx].tx
+    val claimMainDelayed2 = alice2blockchain.expectMsgType[PublishFinalTx].tx
+    val watchConfirmedCommit2 = alice2blockchain.expectMsgType[WatchTxConfirmed]
+    val watchConfirmedClaimMainDelayed2 = alice2blockchain.expectMsgType[WatchTxConfirmed]
+    alice ! WatchFundingSpentTriggered(aliceCommitTx2)
+    alice2blockchain.expectNoMessage()
+
+    // splice 1 confirms
+    watchConfirmed1.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    alice2bob.forward(bob)
+    alice2blockchain.expectMsgType[WatchFundingSpent]
+    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
+    alice2blockchain.expectNoMessage()
+
+    // oops! remote commit for splice 1 is published
+    val bobCommitTx1 = bob.stateData.asInstanceOf[PersistentChannelData].commitments.active.find(_.fundingTxIndex == 1).get.localCommit.commitTxAndRemoteSig.commitTx.tx
+    alice ! WatchFundingSpentTriggered(bobCommitTx1)
+    val watchAlternativeConfirmed = alice2blockchain.expectMsgType[WatchAlternativeCommitTxConfirmed]
+    alice2blockchain.expectNoMessage()
+
+    // remote commit tx confirms
+    watchAlternativeConfirmed.replyTo ! WatchAlternativeCommitTxConfirmedTriggered(BlockHeight(400000), 42, bobCommitTx1)
+
+    // we're back to the normal handling of remote commit
+    val claimMain = alice2blockchain.expectMsgType[PublishFinalTx].tx
+    val watchConfirmedRemoteCommit = alice2blockchain.expectMsgType[WatchTxConfirmed]
+    assert(watchConfirmedRemoteCommit.txId == bobCommitTx1.txid)
+    // this one fires immediately, tx is already confirmed
+    watchConfirmedRemoteCommit.replyTo ! WatchTxConfirmedTriggered(BlockHeight(400000), 42, bobCommitTx1)
+    val watchConfirmedClaimMain = alice2blockchain.expectMsgType[WatchTxConfirmed]
+
+    // claim-main tx confirms
+    watchConfirmedClaimMain.replyTo ! WatchTxConfirmedTriggered(BlockHeight(400000), 42, claimMain)
+
+    // done
+    awaitCond(alice.stateName == CLOSED)
+    assert(Helpers.Closing.isClosed(alice.stateData.asInstanceOf[DATA_CLOSING], None).exists(_.isInstanceOf[RemoteClose]))
   }
 
 
