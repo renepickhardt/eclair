@@ -200,6 +200,8 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
   // choose to not make this an Option (that would be None before the first connection), and instead embrace the fact
   // that the active connection may point to dead letters at all time
   var activeConnection = context.system.deadLetters
+  // we aggregate sigs for splices before processing
+  var sigStash = Seq.empty[CommitSig]
 
   val txPublisher = txPublisherFactory.spawnTxPublisher(context, remoteNodeId)
 
@@ -499,26 +501,30 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       }
 
     case Event(commit: CommitSig, d: DATA_NORMAL) =>
-      d.spliceStatus match {
-        case SpliceStatus.SpliceInProgress(txBuilder) =>
-          txBuilder ! InteractiveTxBuilder.ReceiveCommitSig(commit)
-          stay()
-        case _ =>
-          d.commitments.receiveCommit(Seq(commit), keyManager) match {
-            case Right((commitments1, revocation)) =>
-              log.debug("received a new sig, spec:\n{}", commitments1.latest.specs2String)
-              if (commitments1.changes.localHasChanges) {
-                // if we have newly acknowledged changes let's sign them
-                self ! CMD_SIGN()
+      aggregateSigs(commit) match {
+        case Some(sigs) =>
+          d.spliceStatus match {
+            case SpliceStatus.SpliceInProgress(txBuilder) =>
+              txBuilder ! InteractiveTxBuilder.ReceiveCommitSig(commit)
+              stay()
+            case _ =>
+              d.commitments.receiveCommit(sigs, keyManager) match {
+                case Right((commitments1, revocation)) =>
+                  log.debug("received a new sig, spec:\n{}", commitments1.latest.specs2String)
+                  if (commitments1.changes.localHasChanges) {
+                    // if we have newly acknowledged changes let's sign them
+                    self ! CMD_SIGN()
+                  }
+                  if (d.commitments.availableBalanceForSend != commitments1.availableBalanceForSend) {
+                    // we send this event only when our balance changes
+                    context.system.eventStream.publish(AvailableBalanceChanged(self, d.channelId, d.shortIds, commitments1))
+                  }
+                  context.system.eventStream.publish(ChannelSignatureReceived(self, commitments1))
+                  stay() using d.copy(commitments = commitments1) storing() sending revocation
+                case Left(cause) => handleLocalError(cause, d, Some(commit))
               }
-              if (d.commitments.availableBalanceForSend != commitments1.availableBalanceForSend) {
-                // we send this event only when our balance changes
-                context.system.eventStream.publish(AvailableBalanceChanged(self, d.channelId, d.shortIds, commitments1))
-              }
-              context.system.eventStream.publish(ChannelSignatureReceived(self, commitments1))
-              stay() using d.copy(commitments = commitments1) storing() sending revocation
-            case Left(cause) => handleLocalError(cause, d, Some(commit))
           }
+        case None => stay()
       }
 
     case Event(revocation: RevokeAndAck, d: DATA_NORMAL) =>
@@ -1069,28 +1075,32 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       }
 
     case Event(commit: CommitSig, d@DATA_SHUTDOWN(_, localShutdown, remoteShutdown, closingFeerates)) =>
-      d.commitments.receiveCommit(Seq(commit), keyManager) match {
-        case Right((commitments1, revocation)) =>
-          // we always reply with a revocation
-          log.debug("received a new sig:\n{}", commitments1.latest.specs2String)
-          context.system.eventStream.publish(ChannelSignatureReceived(self, commitments1))
-          if (commitments1.hasNoPendingHtlcsOrFeeUpdate) {
-            if (d.commitments.params.localParams.isInitiator) {
-              // we are the channel initiator, need to initiate the negotiation by sending the first closing_signed
-              val (closingTx, closingSigned) = Closing.MutualClose.makeFirstClosingTx(keyManager, commitments1.latest, localShutdown.scriptPubKey, remoteShutdown.scriptPubKey, nodeParams.onChainFeeConf.feeEstimator, nodeParams.onChainFeeConf.feeTargets, closingFeerates)
-              goto(NEGOTIATING) using DATA_NEGOTIATING(commitments1, localShutdown, remoteShutdown, List(List(ClosingTxProposed(closingTx, closingSigned))), bestUnpublishedClosingTx_opt = None) storing() sending revocation :: closingSigned :: Nil
-            } else {
-              // we are not the channel initiator, will wait for their closing_signed
-              goto(NEGOTIATING) using DATA_NEGOTIATING(commitments1, localShutdown, remoteShutdown, closingTxProposed = List(List()), bestUnpublishedClosingTx_opt = None) storing() sending revocation
-            }
-          } else {
-            if (commitments1.changes.localHasChanges) {
-              // if we have newly acknowledged changes let's sign them
-              self ! CMD_SIGN()
-            }
-            stay() using d.copy(commitments = commitments1) storing() sending revocation
+      aggregateSigs(commit) match {
+        case Some(sigs) =>
+          d.commitments.receiveCommit(sigs, keyManager) match {
+            case Right((commitments1, revocation)) =>
+              // we always reply with a revocation
+              log.debug("received a new sig:\n{}", commitments1.latest.specs2String)
+              context.system.eventStream.publish(ChannelSignatureReceived(self, commitments1))
+              if (commitments1.hasNoPendingHtlcsOrFeeUpdate) {
+                if (d.commitments.params.localParams.isInitiator) {
+                  // we are the channel initiator, need to initiate the negotiation by sending the first closing_signed
+                  val (closingTx, closingSigned) = Closing.MutualClose.makeFirstClosingTx(keyManager, commitments1.latest, localShutdown.scriptPubKey, remoteShutdown.scriptPubKey, nodeParams.onChainFeeConf.feeEstimator, nodeParams.onChainFeeConf.feeTargets, closingFeerates)
+                  goto(NEGOTIATING) using DATA_NEGOTIATING(commitments1, localShutdown, remoteShutdown, List(List(ClosingTxProposed(closingTx, closingSigned))), bestUnpublishedClosingTx_opt = None) storing() sending revocation :: closingSigned :: Nil
+                } else {
+                  // we are not the channel initiator, will wait for their closing_signed
+                  goto(NEGOTIATING) using DATA_NEGOTIATING(commitments1, localShutdown, remoteShutdown, closingTxProposed = List(List()), bestUnpublishedClosingTx_opt = None) storing() sending revocation
+                }
+              } else {
+                if (commitments1.changes.localHasChanges) {
+                  // if we have newly acknowledged changes let's sign them
+                  self ! CMD_SIGN()
+                }
+                stay() using d.copy(commitments = commitments1) storing() sending revocation
+              }
+            case Left(cause) => handleLocalError(cause, d, Some(commit))
           }
-        case Left(cause) => handleLocalError(cause, d, Some(commit))
+        case None => stay()
       }
 
     case Event(revocation: RevokeAndAck, d@DATA_SHUTDOWN(_, localShutdown, remoteShutdown, closingFeerates)) =>
@@ -2022,6 +2032,12 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       }
   }
 
+  /** On disconnection we clear up the sig stash */
+  onTransition {
+    case _ -> OFFLINE =>
+      sigStash = Nil
+  }
+
   /*
           888    888        d8888 888b    888 8888888b.  888      8888888888 8888888b.   .d8888b.
           888    888       d88888 8888b   888 888  "Y88b 888      888        888   Y88b d88P  Y88b
@@ -2032,6 +2048,19 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
           888    888  d8888888888 888   Y8888 888  .d88P 888      888        888  T88b  Y88b  d88P
           888    888 d88P     888 888    Y888 8888888P"  88888888 8888888888 888   T88b  "Y8888P"
    */
+
+  /** For splices we will send one commit_sig per active commitments. */
+  private def aggregateSigs(commit: CommitSig): Option[Seq[CommitSig]] = {
+    sigStash = sigStash :+ commit
+    log.debug("received sig {}/{}", commit.batchIndex, commit.batchSize)
+    if (sigStash.size == commit.batchSize) {
+      val sigs = sigStash
+      sigStash = Nil
+      Some(sigs)
+    } else {
+      None
+    }
+  }
 
   private def handleCurrentFeerate(c: CurrentFeerates, d: PersistentChannelData) = {
     // TODO: we should consider *all* commitments
