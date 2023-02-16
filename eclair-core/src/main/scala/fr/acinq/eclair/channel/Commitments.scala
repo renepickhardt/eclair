@@ -1,6 +1,7 @@
 package fr.acinq.eclair.channel
 
 import akka.event.LoggingAdapter
+import com.softwaremill.quicklens.ModifyPimp
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey}
 import fr.acinq.bitcoin.scalacompat.{ByteVector32, ByteVector64, Crypto, Satoshi, SatoshiLong, Script}
 import fr.acinq.eclair.blockchain.fee.{FeeratePerKw, OnChainFeeConf}
@@ -891,7 +892,13 @@ case class Commitments(params: ChannelParams,
           active = active1,
           remoteNextCommitInfo = Left(WaitForRev(localCommitIndex))
         )
-        Right(commitments1, sigs)
+        val sigs1 = if (sigs.size > 1) {
+          // if there are more than one sig, we add a tlv to tell the receiver how many sigs are to be expected
+          sigs.zipWithIndex.map { case (sig, idx) => sig.modify(_.tlvStream.records).using(_ + CommitSigTlv.BatchTlv(idx + 1, sigs.size)) }
+        } else {
+          sigs
+        }
+        Right(commitments1, sigs1)
       case Left(_) => Left(CannotSignBeforeRevocation(channelId))
     }
   }
@@ -1047,12 +1054,12 @@ case class Commitments(params: ChannelParams,
       log.error(s"funding txid=$txId doesn't match any of our funding txs")
       Left(this)
     } else {
-    val commitments1 = copy(active = active.map {
-      case c if c.fundingTxId == txId =>
-        log.info(s"setting remoteFundingStatus=${RemoteFundingStatus.Locked.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
-        c.copy(remoteFundingStatus = RemoteFundingStatus.Locked)
-      case c => c
-    }).deactivateCommitments()
+      val commitments1 = copy(active = active.map {
+        case c if c.fundingTxId == txId =>
+          log.info(s"setting remoteFundingStatus=${RemoteFundingStatus.Locked.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
+          c.copy(remoteFundingStatus = RemoteFundingStatus.Locked)
+        case c => c
+      }).deactivateCommitments()
       val commitment = commitments1.active.find(_.fundingTxId == txId).get
       Right(commitments1, commitment)
     }

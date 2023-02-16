@@ -63,11 +63,18 @@ sealed trait CommitSigTlv extends Tlv
 object CommitSigTlv {
 
   case class FundingTxIdTlv(txId: ByteVector32) extends CommitSigTlv
+  object FundingTxIdTlv {
+    val codec: Codec[FundingTxIdTlv] = tlvField(bytes32)
+  }
 
-  private val fundingTxIdCodec: Codec[FundingTxIdTlv] = tlvField(bytes32)
+  case class BatchTlv(index: Int, total: Int) extends CommitSigTlv
+  object BatchTlv {
+    val codec: Codec[BatchTlv] = tlvField(uint16 :: uint16)
+  }
 
   val commitSigTlvCodec: Codec[TlvStream[CommitSigTlv]] = tlvStream(discriminated[CommitSigTlv].by(varint)
-    .typecase(UInt64(0x47010003), fundingTxIdCodec)
+    .typecase(UInt64(0x47010003), FundingTxIdTlv.codec)
+    .typecase(UInt64(0x47010005), BatchTlv.codec)
   )
 
 }
