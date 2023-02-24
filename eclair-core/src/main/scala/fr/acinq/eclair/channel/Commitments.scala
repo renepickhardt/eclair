@@ -1029,7 +1029,7 @@ case class Commitments(params: ChannelParams,
 
   def updateLocalFundingStatus(txId: ByteVector32, status: LocalFundingStatus)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
     if (!this.active.exists(_.fundingTxId == txId)) {
-      log.error(s"funding txid=$txId doesn't match any of our funding txs")
+      log.warning(s"funding txid=$txId doesn't match any of our funding txs")
       Left(this)
     } else {
       val commitments1 = copy(active = active.map {
@@ -1045,7 +1045,7 @@ case class Commitments(params: ChannelParams,
 
   def updateRemoteFundingStatus(txId: ByteVector32)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
     if (!this.active.exists(_.fundingTxId == txId)) {
-      log.error(s"funding txid=$txId doesn't match any of our funding txs")
+      log.warning(s"funding txid=$txId doesn't match any of our funding txs")
       Left(this)
     } else {
       val commitments1 = copy(active = active.map {
@@ -1086,13 +1086,13 @@ case class Commitments(params: ChannelParams,
    * - their funding tx has been permanently spent by a splice tx
    */
   def pruneCommitments()(implicit log: LoggingAdapter): Commitments = {
-    active
+    all
       .filter(_.localFundingStatus.isInstanceOf[LocalFundingStatus.ConfirmedFundingTx])
       .sortBy(_.fundingTxIndex)
       .lastOption match {
       case Some(lastConfirmed) =>
         // we can prune all other commitments with the same or lower funding index
-        val pruned = (active ++ inactive).filter(c => c.fundingTxId != lastConfirmed.fundingTxId && c.fundingTxIndex <= lastConfirmed.fundingTxIndex)
+        val pruned = all.filter(c => c.fundingTxId != lastConfirmed.fundingTxId && c.fundingTxIndex <= lastConfirmed.fundingTxIndex)
         val active1 = active diff pruned
         val inactive1 = inactive diff pruned
         pruned.foreach(c => log.info("pruning commitment index={} fundingTxid={}", c.fundingTxIndex, c.fundingTxId))

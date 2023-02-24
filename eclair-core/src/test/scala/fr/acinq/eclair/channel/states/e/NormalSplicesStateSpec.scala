@@ -190,9 +190,10 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(fundingTx1.txid == watchConfirmed1.txId)
 
     initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
-    // we're not putting a watch confirm immediately for the second watch
+    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
     alice2blockchain.expectNoMessage()
     val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    assert(fundingTx2.txid == watchConfirmed2.txId)
 
     // splice 1 confirms
     watchConfirmed1.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
@@ -200,14 +201,11 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice2bob.forward(bob)
     alice2blockchain.expectMsgType[WatchFundingSpent]
 
-    // watch for splice 2 is set
-    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
-    assert(fundingTx2.txid == watchConfirmed2.txId)
-
     // splice 2 confirms
     watchConfirmed2.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
     assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
     alice2bob.forward(bob)
+    alice2blockchain.expectMsgType[WatchFundingSpent]
   }
 
   test("recv CMD_ADD_HTLC with multiple commitments") { f =>
@@ -348,6 +346,8 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     val watchConfirmed1b = bob2blockchain.expectMsgType[WatchFundingConfirmed]
     initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
     val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    val watchConfirmed2a = alice2blockchain.expectMsgType[WatchFundingConfirmed]
+    val watchConfirmed2b = bob2blockchain.expectMsgType[WatchFundingConfirmed]
     alice2bob.expectNoMessage()
     bob2alice.expectNoMessage()
     // we now have two unconfirmed splices
@@ -369,7 +369,6 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx1.txid)
     alice2bob.forward(bob)
     alice2blockchain.expectMsgType[WatchFundingSpent]
-    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
 
     alice2bob.ignoreMsg { case _: ChannelUpdate => true }
     bob2alice.ignoreMsg { case _: ChannelUpdate => true }
@@ -381,7 +380,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice2bob.forward(bob)
 
     // splice 2 confirms on alice's side
-    watchConfirmed2.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    watchConfirmed2a.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
     assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
     alice2bob.forward(bob)
     alice2blockchain.expectMsgType[WatchFundingSpent]
@@ -399,7 +398,6 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(bob2alice.expectMsgType[SpliceLocked].fundingTxid == fundingTx1.txid)
     bob2alice.forward(alice)
     bob2blockchain.expectMsgType[WatchFundingSpent]
-    val watchConfirmed2b = bob2blockchain.expectMsgType[WatchFundingConfirmed]
 
     disconnect()
     reconnect()
@@ -449,6 +447,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     val watchConfirmed1 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
     initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
     val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
     alice2bob.expectNoMessage()
     bob2alice.expectNoMessage()
     alice2blockchain.expectNoMessage()
@@ -467,7 +466,6 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     watchConfirmed1.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
     alice2bob.forward(bob)
     alice2blockchain.expectMsgType[WatchFundingSpent]
-    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
     alice2blockchain.expectNoMessage()
 
     // splice 2 confirms
@@ -495,6 +493,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     val watchConfirmed1 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
     initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
     val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
     alice2bob.expectNoMessage()
     bob2alice.expectNoMessage()
     alice2blockchain.expectNoMessage()
@@ -513,7 +512,6 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     watchConfirmed1.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
     alice2bob.forward(bob)
     alice2blockchain.expectMsgType[WatchFundingSpent]
-    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
     alice2blockchain.expectNoMessage()
 
     // oops! remote commit for splice 1 is published
