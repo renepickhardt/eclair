@@ -1028,7 +1028,7 @@ case class Commitments(params: ChannelParams,
   }
 
   def updateLocalFundingStatus(txId: ByteVector32, status: LocalFundingStatus)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
-    if (!this.active.exists(_.fundingTxId == txId)) {
+    if (!active.exists(_.fundingTxId == txId)) {
       log.warning(s"funding txid=$txId doesn't match any of our funding txs")
       Left(this)
     } else {
@@ -1044,7 +1044,7 @@ case class Commitments(params: ChannelParams,
   }
 
   def updateRemoteFundingStatus(txId: ByteVector32)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
-    if (!this.active.exists(_.fundingTxId == txId)) {
+    if (!active.exists(_.fundingTxId == txId)) {
       log.warning(s"funding txid=$txId doesn't match any of our funding txs")
       Left(this)
     } else {
@@ -1081,7 +1081,7 @@ case class Commitments(params: ChannelParams,
   }
 
   /**
-   * We can prune commitments in two cases:
+   * We can prune inactive commitments in two cases:
    * - their funding tx has been permanently double-spent by the funding tx of a concurrent commitments (happens when using RBF)
    * - their funding tx has been permanently spent by a splice tx
    */
@@ -1091,12 +1091,11 @@ case class Commitments(params: ChannelParams,
       .sortBy(_.fundingTxIndex)
       .lastOption match {
       case Some(lastConfirmed) =>
-        // we can prune all other commitments with the same or lower funding index
-        val pruned = all.filter(c => c.fundingTxId != lastConfirmed.fundingTxId && c.fundingTxIndex <= lastConfirmed.fundingTxIndex)
-        val active1 = active diff pruned
+        // we can prune all inactive commitments with the same or lower funding index
+        val pruned = inactive.filter(c => c.fundingTxId != lastConfirmed.fundingTxId && c.fundingTxIndex <= lastConfirmed.fundingTxIndex)
         val inactive1 = inactive diff pruned
         pruned.foreach(c => log.info("pruning commitment index={} fundingTxid={}", c.fundingTxIndex, c.fundingTxId))
-        copy(active = active1, inactive = inactive1)
+        copy(inactive = inactive1)
       case _ =>
         this
     }
