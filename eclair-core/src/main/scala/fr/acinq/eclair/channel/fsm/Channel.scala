@@ -749,15 +749,17 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
             log.info(s"initiating splice with local.in.amount=${cmd.additionalLocalFunding} local.in.push=${cmd.pushAmount} out.amount=${cmd.spliceOut_opt.map(_.amount).sum}")
             val targetFeerate = nodeParams.onChainFeeConf.feeEstimator.getFeeratePerKw(target = nodeParams.onChainFeeConf.feeTargets.fundingBlockTarget)
             val spliceInit = SpliceInit(d.channelId,
-              lockTime = nodeParams.currentBlockHeight.toLong,
-              feerate = targetFeerate,
-              fundingContribution = InteractiveTxBuilder.computeLocalContribution(
+              fundingAmount = InteractiveTxBuilder.computeLocalContribution(
                 isInitiator = true,
                 commitment = d.commitments.active.head,
                 spliceInAmount = cmd.additionalLocalFunding,
                 spliceOut = cmd.spliceOut_opt.toList.map(s => TxOut(s.amount, s.pubKeyScript)),
                 targetFeerate = targetFeerate),
-              pushAmount = cmd.pushAmount)
+              lockTime = nodeParams.currentBlockHeight.toLong,
+              feerate = targetFeerate,
+              pushAmount = cmd.pushAmount,
+              requireConfirmedInputs = nodeParams.channelConf.requireConfirmedInputsForDualFunding
+            )
             stay() using d.copy(spliceStatus = SpliceStatus.SpliceRequested(cmd.copy(replyTo = replyTo), spliceInit)) sending spliceInit
           } else {
             log.warning("cannot do splice")
@@ -774,25 +776,26 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       d.spliceStatus match {
         case SpliceStatus.NoSplice =>
           if (d.commitments.isIdle && d.commitments.params.channelFeatures.hasFeature(DualFunding)) {
-            log.info(s"accepting splice with remote.in.amount=${msg.fundingContribution} remote.in.push=${msg.pushAmount}")
+            log.info(s"accepting splice with remote.in.amount=${msg.fundingAmount} remote.in.push=${msg.pushAmount}")
             val spliceAck = SpliceAck(d.channelId,
-              fundingContribution = d.commitments.latest.localCommit.spec.toLocal.truncateToSatoshi,
+              fundingAmount = d.commitments.latest.localCommit.spec.toLocal.truncateToSatoshi,
               pushAmount = 0.msat, // only remote contributes to the splice
+              requireConfirmedInputs = nodeParams.channelConf.requireConfirmedInputsForDualFunding
             )
             val parentCommitments = d.commitments.latest
             val fundingParams = InteractiveTxParams(
               channelId = d.channelId,
               isInitiator = false,
-              localAmount = spliceAck.fundingContribution,
-              remoteAmount = msg.fundingContribution,
+              localAmount = spliceAck.fundingAmount,
+              remoteAmount = msg.fundingAmount,
               sharedInput_opt = Some(Multisig2of2Input(keyManager, d.commitments.params, parentCommitments.commitment)),
               fundingPubkeyScript = parentCommitments.commitment.commitInput.txOut.publicKeyScript, // same pubkey script as before
               localOutputs = Nil,
               lockTime = nodeParams.currentBlockHeight.toLong,
               dustLimit = parentCommitments.localParams.dustLimit.max(d.commitments.params.remoteParams.dustLimit),
               targetFeerate = msg.feerate,
-              minDepth_opt = Funding.minDepthDualFunding(nodeParams.channelConf, d.commitments.params.localParams.initFeatures, isInitiator = false, localAmount = spliceAck.fundingContribution, remoteAmount = msg.fundingContribution),
-              requireConfirmedInputs = RequireConfirmedInputs(forLocal = false, forRemote = false), // TODO: revisit this
+              minDepth_opt = Funding.minDepthDualFunding(nodeParams.channelConf, d.commitments.params.localParams.initFeatures, isInitiator = false, localAmount = spliceAck.fundingAmount, remoteAmount = msg.fundingAmount),
+              requireConfirmedInputs = RequireConfirmedInputs(forLocal = msg.requireConfirmedInputs, forRemote = spliceAck.requireConfirmedInputs)
             )
             val txBuilder = context.spawnAnonymous(InteractiveTxBuilder(
               nodeParams, fundingParams,
@@ -817,23 +820,23 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
 
     case Event(msg: SpliceAck, d: DATA_NORMAL) =>
       d.spliceStatus match {
-        case SpliceStatus.SpliceRequested(cmd, init) =>
-          log.info("our peer accepted our splice request and will contribute {} to the funding transaction", msg.fundingContribution)
+        case SpliceStatus.SpliceRequested(cmd, spliceInit) =>
+          log.info("our peer accepted our splice request and will contribute {} to the funding transaction", msg.fundingAmount)
           cmd.replyTo ! RES_SUCCESS(cmd, d.channelId)
           val parentCommitments = d.commitments.latest
           val fundingParams = InteractiveTxParams(
             channelId = d.channelId,
             isInitiator = true,
-            localAmount = init.fundingContribution,
-            remoteAmount = msg.fundingContribution,
+            localAmount = spliceInit.fundingAmount,
+            remoteAmount = msg.fundingAmount,
             sharedInput_opt = Some(Multisig2of2Input(keyManager, d.commitments.params, parentCommitments.commitment)),
             fundingPubkeyScript = parentCommitments.commitInput.txOut.publicKeyScript, // same pubkey script as before
             localOutputs = cmd.spliceOut_opt.toList.map(s => TxOut(s.amount, s.pubKeyScript)),
-            lockTime = init.lockTime,
+            lockTime = spliceInit.lockTime,
             dustLimit = d.commitments.params.localParams.dustLimit.max(d.commitments.params.remoteParams.dustLimit),
-            targetFeerate = init.feerate,
-            minDepth_opt = Funding.minDepthDualFunding(nodeParams.channelConf, d.commitments.params.localParams.initFeatures, isInitiator = true, localAmount = cmd.additionalLocalFunding, remoteAmount = msg.fundingContribution),
-            requireConfirmedInputs = RequireConfirmedInputs(forLocal = false, forRemote = false) // TODO: revisit this
+            targetFeerate = spliceInit.feerate,
+            minDepth_opt = Funding.minDepthDualFunding(nodeParams.channelConf, d.commitments.params.localParams.initFeatures, isInitiator = true, localAmount = cmd.additionalLocalFunding, remoteAmount = msg.fundingAmount),
+            requireConfirmedInputs = RequireConfirmedInputs(forLocal = msg.requireConfirmedInputs, forRemote = spliceInit.requireConfirmedInputs)
           )
           val txBuilder = context.spawnAnonymous(InteractiveTxBuilder(
             nodeParams, fundingParams,
@@ -845,8 +848,8 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
           txBuilder ! InteractiveTxBuilder.Start(self)
           stay() using d.copy(spliceStatus = SpliceStatus.SpliceInProgress(txBuilder))
         case _ =>
-          log.info("ignoring unexpected splice_ack")
-          stay() sending Warning(d.channelId, UnexpectedInteractiveTxMessage(d.channelId, msg).getMessage)
+          log.info(s"ignoring unexpected splice_ack=$msg")
+          stay()
       }
 
     case Event(msg: InteractiveTxBuilder.Response, d: DATA_NORMAL) => msg match {
