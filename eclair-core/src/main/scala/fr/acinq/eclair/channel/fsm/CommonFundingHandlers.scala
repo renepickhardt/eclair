@@ -78,11 +78,6 @@ trait CommonFundingHandlers extends CommonHandlers {
         rollbackDualFundingTxs(d.commitments.active // note how we use the unpruned original commitments
           .filter(c => c.fundingTxIndex == commitment.fundingTxIndex && c.fundingTxId != commitment.fundingTxId)
           .map(_.localFundingStatus).collect { case fundingTx: DualFundedUnconfirmedFundingTx => fundingTx.sharedTx })
-        // we then put a watch-confirmed on the funding txs with the next index
-        commitments1.active
-          .filter(c => c.fundingTxIndex == commitment.fundingTxIndex + 1)
-          .map(_.localFundingStatus)
-          .collect { case fundingTx: DualFundedUnconfirmedFundingTx => watchFundingConfirmed(fundingTx.sharedTx.txId, fundingTx.fundingParams.minDepth_opt) }
         (commitments1, commitment)
     }
   }

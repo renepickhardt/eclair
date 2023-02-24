@@ -858,19 +858,8 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       case InteractiveTxBuilder.SendMessage(msg) => stay() sending msg
       case InteractiveTxBuilder.Succeeded(dfu, commitment) =>
         log.info(s"splice completed: new funding index=${commitment.fundingTxIndex} txid=${dfu.sharedTx.txId}")
-        // In order to preserve sequentiality of confirmations, we only put a watch-confirmed if our previous funding tx is confirmed
-        d.commitments.latest.localFundingStatus match {
-          case _: LocalFundingStatus.DualFundedUnconfirmedFundingTx => () // we wait for the previous funding tx to confirm before watching the new one
-          case _ =>
-            dfu.fundingParams.minDepth_opt match {
-              case Some(fundingMinDepth) => blockchain ! WatchFundingConfirmed(self, commitment.fundingTxId, fundingMinDepth)
-              // When using 0-conf, we make sure that the transaction was successfully published, otherwise there is a risk
-              // of accidentally double-spending it later (e.g. restarting bitcoind would remove the utxo locks).
-              case None => blockchain ! WatchPublished(self, commitment.fundingTxId)
-            }
-        }
-        val commitments1 = d.commitments.add(commitment)
-        val d1 = d.copy(commitments = commitments1, spliceStatus = SpliceStatus.NoSplice)
+        watchFundingConfirmed(commitment.fundingTxId, dfu.fundingParams.minDepth_opt)
+        val d1 = d.copy(commitments = d.commitments.add(commitment), spliceStatus = SpliceStatus.NoSplice)
         dfu.sharedTx match {
           case fundingTx: PartiallySignedSharedTransaction => stay() using d1 storing() sending fundingTx.localSigs
           case fundingTx: FullySignedSharedTransaction => stay() using d1 storing() sending fundingTx.localSigs calling publishFundingTx(dfu)
@@ -918,10 +907,14 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
                   // so we cannot close the channel yet.
                   stay() sending Error(d.channelId, InvalidFundingSignature(d.channelId, Some(unsignedFundingTx.txid)).getMessage)
                 case Right(fundingTx) =>
-                  log.info("publishing funding tx for channelId={} fundingTxId={}", d.channelId, fundingTx.signedTx.txid)
                   val dfu1 = dfu.copy(sharedTx = fundingTx)
-                  val d1 = d.modify(_.commitments.active.at(0).localFundingStatus).setTo(dfu1)
-                  stay() using d1 storing() calling publishFundingTx(dfu1)
+                  d.commitments.updateLocalFundingStatus(msg.txId, dfu1) match {
+                    case Right((commitments1, _)) =>
+                      log.info("publishing funding tx for channelId={} fundingTxId={}", d.channelId, fundingTx.signedTx.txid)
+                      stay() using d.copy(commitments = commitments1) storing() calling publishFundingTx(dfu1)
+                    case Left(_) =>
+                      stay()
+                  }
               }
               case _: FullySignedSharedTransaction =>
                 // Signatures are retransmitted on reconnection, but we may have already received them.
@@ -1363,7 +1356,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       }
 
     case Event(WatchFundingSpentTriggered(tx), d: DATA_CLOSING) =>
-      if (d.commitments.active.map(_.fundingTxId).contains(tx.txid)) {
+      if (d.commitments.all.map(_.fundingTxId).contains(tx.txid)) {
         // if the spending tx is itself a funding tx, this is a splice and there is nothing to do
         stay()
       } else if (d.mutualClosePublished.exists(_.tx.txid == tx.txid)) {
@@ -1922,20 +1915,18 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       handleMutualClose(d.bestUnpublishedClosingTx_opt.get, Left(d))
 
     case Event(WatchFundingSpentTriggered(tx), d: PersistentChannelData) =>
-      if (d.commitments.active.map(_.fundingTxId).contains(tx.txid)) {
+      if (d.commitments.all.map(_.fundingTxId).contains(tx.txid)) {
         // if the spending tx is itself a funding tx, this is a splice and there is nothing to do
         stay()
+      } else if (tx.txid == d.commitments.latest.remoteCommit.txid) {
+        handleRemoteSpentCurrent(tx, d)
+      } else if (d.commitments.latest.nextRemoteCommit_opt.exists(_.commit.txid == tx.txid)) {
+        handleRemoteSpentNext(tx, d)
+      } else if (tx.txid == d.commitments.latest.localCommit.commitTxAndRemoteSig.commitTx.tx.txid) {
+        log.warning(s"processing local commit spent from the outside")
+        spendLocalCurrent(d)
       } else {
-        if (tx.txid == d.commitments.latest.remoteCommit.txid) {
-          handleRemoteSpentCurrent(tx, d)
-        } else if (d.commitments.latest.nextRemoteCommit_opt.exists(_.commit.txid == tx.txid)) {
-          handleRemoteSpentNext(tx, d)
-        } else if (tx.txid == d.commitments.latest.localCommit.commitTxAndRemoteSig.commitTx.tx.txid) {
-          log.warning(s"processing local commit spent from the outside")
-          spendLocalCurrent(d)
-        } else {
-          handleRemoteSpentOther(tx, d)
-        }
+        handleRemoteSpentOther(tx, d)
       }
   }
 
