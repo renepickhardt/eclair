@@ -1028,7 +1028,7 @@ case class Commitments(params: ChannelParams,
   }
 
   def updateLocalFundingStatus(txId: ByteVector32, status: LocalFundingStatus)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
-    if (!this.active.exists(_.fundingTxId == txId)) {
+    if (!active.exists(_.fundingTxId == txId)) {
       log.warning(s"funding txid=$txId doesn't match any of our funding txs")
       Left(this)
     } else {
@@ -1044,7 +1044,7 @@ case class Commitments(params: ChannelParams,
   }
 
   def updateRemoteFundingStatus(txId: ByteVector32)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
-    if (!this.active.exists(_.fundingTxId == txId)) {
+    if (!active.exists(_.fundingTxId == txId)) {
       log.warning(s"funding txid=$txId doesn't match any of our funding txs")
       Left(this)
     } else {
