@@ -22,7 +22,7 @@ import akka.actor.{Actor, ActorContext, ActorRef, FSM, OneForOneStrategy, Possib
 import akka.event.Logging.MDC
 import com.softwaremill.quicklens.{ModifyPimp, QuicklensAt}
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey}
-import fr.acinq.bitcoin.scalacompat.{ByteVector32, Satoshi, SatoshiLong, Transaction, TxOut}
+import fr.acinq.bitcoin.scalacompat.{Block, ByteVector32, Satoshi, SatoshiLong, Transaction, TxOut}
 import fr.acinq.eclair.Features.DualFunding
 import fr.acinq.eclair.Logs.LogCategory
 import fr.acinq.eclair._
@@ -360,6 +360,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       val error = ForbiddenDuringSplice(d.channelId, c.getClass.getSimpleName)
       c match {
         case c: CMD_ADD_HTLC => handleAddHtlcCommandError(c, error, Some(d.channelUpdate))
+        // NB: the command cannot be an htlc settlement (fail/fulfill), because if we are splicing it means the channel is idle and has no htlcs
         case _ => handleCommandError(error, c)
       }
 
@@ -772,7 +773,8 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
           stay()
       }
 
-    case Event(msg: SpliceInit, d: DATA_NORMAL) =>
+    // NB: we only accept splices on regtest
+    case Event(msg: SpliceInit, d: DATA_NORMAL) if nodeParams.chainHash == Block.RegtestGenesisBlock.hash =>
       d.spliceStatus match {
         case SpliceStatus.NoSplice =>
           if (d.commitments.isIdle && d.commitments.params.channelFeatures.hasFeature(DualFunding)) {
@@ -892,9 +894,9 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
           log.debug("our peer acked our previous tx_abort")
           stay() using d.copy(spliceStatus = SpliceStatus.NoSplice)
         case SpliceStatus.NoSplice =>
-          log.info("our peer wants to abort the dual funding flow, but we've already negotiated a funding transaction: ascii='{}' bin={}", msg.toAscii, msg.data)
+          log.info("our peer wants to abort the splice, but we've already negotiated a splice transaction: ascii='{}' bin={}", msg.toAscii, msg.data)
           // We ack their tx_abort but we keep monitoring the funding transaction until it's confirmed or double-spent.
-          stay() sending TxAbort(d.channelId, DualFundingAborted(d.channelId).getMessage)
+          stay() sending TxAbort(d.channelId, SpliceAttemptAborted(d.channelId).getMessage)
       }
 
     case Event(msg: InteractiveTxMessage, d: DATA_NORMAL) =>
@@ -935,9 +937,26 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
           stay() sending Warning(d.channelId, UnexpectedInteractiveTxMessage(d.channelId, msg).getMessage)
       }
 
+    case Event(w: WatchPublishedTriggered, d: DATA_NORMAL) =>
+      val fundingStatus = LocalFundingStatus.ZeroconfPublishedFundingTx(w.tx)
+      d.commitments.updateLocalFundingStatus(w.tx.txid, fundingStatus) match {
+        case Right((commitments1, _)) =>
+          watchFundingConfirmed(w.tx.txid, Some(nodeParams.channelConf.minDepthBlocks))
+          stay() using d.copy(commitments = commitments1) storing() sending SpliceLocked(d.channelId, w.tx.txid)
+        case Left(_) => stay()
+      }
+
     case Event(w: WatchFundingConfirmedTriggered, d: DATA_NORMAL) =>
       acceptFundingTxConfirmed(w, d) match {
-        case Right((commitments1, _)) => stay() using d.copy(commitments = commitments1) storing() sending SpliceLocked(d.channelId, w.tx.txid)
+        case Right((commitments1, _)) =>
+          val toSend = d.commitments.active
+            .find(_.fundingTxId == w.tx.txid).get // will always be found since we are in the Right() handler
+            .localFundingStatus match {
+            // check if the funding status just moved from NotLocked to Locked
+            case _: LocalFundingStatus.NotLocked => Some(SpliceLocked(d.channelId, w.tx.txid))
+            case _: LocalFundingStatus.Locked => None // this was a zero-conf splice, we already sent our splice_locked
+          }
+          stay() using d.copy(commitments = commitments1) storing() sending toSend.toSeq
         case Left(_) => stay()
       }
 
@@ -950,6 +969,13 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
     case Event(INPUT_DISCONNECTED, d: DATA_NORMAL) =>
       // we cancel the timer that would have made us send the enabled update after reconnection (flappy channel protection)
       cancelTimer(Reconnected.toString)
+      // if we are splicing, we need to cancel it
+      d.spliceStatus match {
+        case SpliceStatus.SpliceInProgress(txBuilder) => txBuilder ! InteractiveTxBuilder.Abort
+        case SpliceStatus.SpliceRequested(cmd, _) => cmd.replyTo ! Status.Failure(new RuntimeException("splice attempt failed: disconnected"))
+        case SpliceStatus.SpliceAborted => // nothing to do
+        case SpliceStatus.NoSplice => // nothing to do
+      }
       // if we have pending unsigned htlcs, then we cancel them and generate an update with the disabled flag set, that will be returned to the sender in a temporary channel failure
       if (d.commitments.changes.localChanges.proposed.collectFirst { case add: UpdateAddHtlc => add }.isDefined) {
         log.debug("updating channel_update announcement (reason=disabled)")
@@ -958,9 +984,9 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
         d.commitments.changes.localChanges.proposed.collect {
           case add: UpdateAddHtlc => relayer ! RES_ADD_SETTLED(d.commitments.originChannels(add.id), add, HtlcResult.DisconnectedBeforeSigned(channelUpdate1))
         }
-        goto(OFFLINE) using d.copy(channelUpdate = channelUpdate1) storing()
+        goto(OFFLINE) using d.copy(channelUpdate = channelUpdate1, spliceStatus = SpliceStatus.NoSplice) storing()
       } else {
-        goto(OFFLINE) using d
+        goto(OFFLINE) using d.copy(spliceStatus = SpliceStatus.NoSplice)
       }
 
     case Event(e: Error, d: DATA_NORMAL) => handleRemoteError(e, d)
@@ -1614,14 +1640,12 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
             // NB: there is a key difference between channel_ready and splice_confirmed:
             // - channel_ready: a non-zero commitment index implies that both sides have seen the channel_ready
             // - splice_confirmed: the commitment index can be updated as long as it is compatible with all splices, so
-            //   we must keep sending our splice_confirmed for splice N until we receive the splice_confirmed for splice N+1
+            //   we must keep sending our most recent splice_confirmed at each reconnection
             val spliceConfirmed = d.commitments.active
-              .reverse // we send splice_confirmed in the order splices were created
               .filter(c => c.fundingTxIndex > 0) // only consider splice txs
-              .map(_.localFundingStatus)
-              .collect { case tx: LocalFundingStatus.ConfirmedFundingTx =>
-                log.debug(s"re-sending SpliceLocked for fundingTxid=${tx.tx.txid}")
-                SpliceLocked(d.channelId, tx.tx.txid)
+              .collectFirst { case c if c.localFundingStatus.isInstanceOf[LocalFundingStatus.Locked] =>
+                log.debug(s"re-sending SpliceLocked for fundingTxid=${c.fundingTxId}")
+                SpliceLocked(d.channelId, c.fundingTxId)
               }
             sendQueue = sendQueue ++ spliceConfirmed
           }
