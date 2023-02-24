@@ -161,7 +161,7 @@ case class NextRemoteCommit(sig: CommitSig, commit: RemoteCommit)
  *                       - splice txs have index 1, 2, ...
  *                       - commitments that share the same index are rbfed
  */
-case class Commitment(fundingTxIndex: Int,
+case class Commitment(fundingTxIndex: Long,
                       localFundingStatus: LocalFundingStatus, remoteFundingStatus: RemoteFundingStatus,
                       localCommit: LocalCommit, remoteCommit: RemoteCommit, nextRemoteCommit_opt: Option[NextRemoteCommit]) {
   val commitInput: InputInfo = localCommit.commitTxAndRemoteSig.commitTx.input
@@ -625,7 +625,7 @@ object Commitment {
 
 /** Subset of Commitments when we want to work with a single, specific commitment. */
 case class FullCommitment(params: ChannelParams, changes: CommitmentChanges,
-                          fundingTxIndex: Int,
+                          fundingTxIndex: Long,
                           localFundingStatus: LocalFundingStatus, remoteFundingStatus: RemoteFundingStatus,
                           localCommit: LocalCommit, remoteCommit: RemoteCommit, nextRemoteCommit_opt: Option[NextRemoteCommit]) {
   val channelId = params.channelId
