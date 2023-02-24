@@ -181,16 +181,16 @@ trait ErrorHandlers extends CommonHandlers {
       stay()
     } else {
       val finalScriptPubKey = getOrGenerateFinalScriptPubKey(d)
-      val commitments = d.commitments.latest
-      log.error(s"force-closing with fundingIndex=${commitments.fundingTxIndex}")
-      val commitTx = commitments.fullySignedLocalCommitTx(keyManager).tx
-      val localCommitPublished = Closing.LocalClose.claimCommitTxOutputs(keyManager, commitments, commitTx, nodeParams.currentBlockHeight, nodeParams.onChainFeeConf, finalScriptPubKey)
+      val commitment = d.commitments.latest
+      log.error(s"force-closing with fundingIndex=${commitment.fundingTxIndex}")
+      val commitTx = commitment.fullySignedLocalCommitTx(keyManager).tx
+      val localCommitPublished = Closing.LocalClose.claimCommitTxOutputs(keyManager, commitment, commitTx, nodeParams.currentBlockHeight, nodeParams.onChainFeeConf, finalScriptPubKey)
       val nextData = d match {
         case closing: DATA_CLOSING => closing.copy(localCommitPublished = Some(localCommitPublished))
         case negotiating: DATA_NEGOTIATING => DATA_CLOSING(d.commitments, waitingSince = nodeParams.currentBlockHeight, finalScriptPubKey = finalScriptPubKey, negotiating.closingTxProposed.flatten.map(_.unsignedTx), localCommitPublished = Some(localCommitPublished))
         case _ => DATA_CLOSING(d.commitments, waitingSince = nodeParams.currentBlockHeight, finalScriptPubKey = finalScriptPubKey, mutualCloseProposed = Nil, localCommitPublished = Some(localCommitPublished))
       }
-      goto(CLOSING) using nextData storing() calling doPublish(localCommitPublished, commitments)
+      goto(CLOSING) using nextData storing() calling doPublish(localCommitPublished, commitment)
     }
   }
 

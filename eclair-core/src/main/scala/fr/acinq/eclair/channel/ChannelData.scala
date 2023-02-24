@@ -409,6 +409,9 @@ case class ShortIds(real: RealScidStatus, localAlias: Alias, remoteAlias_opt: Op
 
 sealed trait LocalFundingStatus { def signedTx_opt: Option[Transaction] }
 object LocalFundingStatus {
+  sealed trait NotLocked extends LocalFundingStatus
+  sealed trait Locked extends LocalFundingStatus
+
   sealed trait UnconfirmedFundingTx extends LocalFundingStatus
   /**
    * In single-funding, fundees only know the funding txid.
@@ -416,14 +419,14 @@ object LocalFundingStatus {
    * didn't keep the funding tx at all, even as funder (e.g. NORMAL). However, right after restoring those channels we
    * retrieve the funding tx and update the funding status immediately.
    */
-  case class SingleFundedUnconfirmedFundingTx(signedTx_opt: Option[Transaction]) extends UnconfirmedFundingTx
-  case class DualFundedUnconfirmedFundingTx(sharedTx: SignedSharedTransaction, createdAt: BlockHeight, fundingParams: InteractiveTxParams) extends UnconfirmedFundingTx {
+  case class SingleFundedUnconfirmedFundingTx(signedTx_opt: Option[Transaction]) extends UnconfirmedFundingTx with NotLocked
+  case class DualFundedUnconfirmedFundingTx(sharedTx: SignedSharedTransaction, createdAt: BlockHeight, fundingParams: InteractiveTxParams) extends UnconfirmedFundingTx with NotLocked {
     override def signedTx_opt: Option[Transaction] = sharedTx.signedTx_opt
   }
-  case class ZeroconfPublishedFundingTx(tx: Transaction) extends UnconfirmedFundingTx {
+  case class ZeroconfPublishedFundingTx(tx: Transaction) extends UnconfirmedFundingTx with Locked {
     override val signedTx_opt: Option[Transaction] = Some(tx)
   }
-  case class ConfirmedFundingTx(tx: Transaction) extends LocalFundingStatus {
+  case class ConfirmedFundingTx(tx: Transaction) extends LocalFundingStatus with Locked {
     override val signedTx_opt: Option[Transaction] = Some(tx)
   }
 }

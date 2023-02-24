@@ -178,6 +178,7 @@ object InteractiveTxBuilder {
         )
         dummyTx.weight() + Multisig2of2Input.weight
       } else 0
+      // TODO: use proper weight() method when it is released in bitcoin-kmp (https://github.com/ACINQ/bitcoin-kmp/pull/84)
       val spliceOutputsWeight = 4 * spliceOut.map(TxOut.write(_).size).sum
       val weight = commonFieldsWeight + spliceOutputsWeight
       Transactions.weight2fee(targetFeerate, weight.toInt)
