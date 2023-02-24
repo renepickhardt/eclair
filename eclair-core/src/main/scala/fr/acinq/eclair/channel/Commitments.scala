@@ -894,7 +894,7 @@ case class Commitments(params: ChannelParams,
         )
         val sigs1 = if (sigs.size > 1) {
           // if there are more than one sig, we add a tlv to tell the receiver how many sigs are to be expected
-          sigs.zipWithIndex.map { case (sig, idx) => sig.modify(_.tlvStream.records).using(_ + CommitSigTlv.BatchTlv(idx + 1, sigs.size)) }
+          sigs.map { sig => sig.modify(_.tlvStream.records).using(_ + CommitSigTlv.BatchTlv(sigs.size)) }
         } else {
           sigs
         }

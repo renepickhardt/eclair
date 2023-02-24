@@ -20,7 +20,7 @@ import fr.acinq.bitcoin.scalacompat.ByteVector32
 import fr.acinq.bitcoin.scalacompat.Crypto.PublicKey
 import fr.acinq.eclair.UInt64
 import fr.acinq.eclair.wire.protocol.CommonCodecs._
-import fr.acinq.eclair.wire.protocol.TlvCodecs.{tlvField, tlvStream}
+import fr.acinq.eclair.wire.protocol.TlvCodecs.{tlvField, tlvStream, tu16}
 import scodec.Codec
 import scodec.bits.HexStringSyntax
 import scodec.codecs._
@@ -67,9 +67,10 @@ object CommitSigTlv {
     val codec: Codec[FundingTxIdTlv] = tlvField(bytes32)
   }
 
-  case class BatchTlv(index: Int, total: Int) extends CommitSigTlv
+  /** @param size the number of [[CommitSig]] messages in the batch */
+  case class BatchTlv(size: Int) extends CommitSigTlv
   object BatchTlv {
-    val codec: Codec[BatchTlv] = tlvField(uint16 :: uint16)
+    val codec: Codec[BatchTlv] = tlvField(tu16)
   }
 
   val commitSigTlvCodec: Codec[TlvStream[CommitSigTlv]] = tlvStream(discriminated[CommitSigTlv].by(varint)
