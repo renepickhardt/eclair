@@ -2059,7 +2059,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
   /** For splices we will send one commit_sig per active commitments. */
   private def aggregateSigs(commit: CommitSig): Option[Seq[CommitSig]] = {
     sigStash = sigStash :+ commit
-    log.debug("received sig {}/{}", commit.batchIndex, commit.batchSize)
+    log.debug("received sig for batch of size={}", commit.batchSize)
     if (sigStash.size == commit.batchSize) {
       val sigs = sigStash
       sigStash = Nil
