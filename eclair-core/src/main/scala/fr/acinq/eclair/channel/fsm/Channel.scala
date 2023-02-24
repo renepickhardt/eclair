@@ -763,7 +763,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
             stay() using d.copy(spliceStatus = SpliceStatus.SpliceRequested(cmd.copy(replyTo = replyTo), spliceInit)) sending spliceInit
           } else {
             log.warning("cannot do splice")
-            replyTo ! Status.Failure(CommandUnavailableInThisState(d.channelId, "CMD_SPLICE_IN", NORMAL))
+            replyTo ! Status.Failure(CommandUnavailableInThisState(d.channelId, "splice", NORMAL))
             stay()
           }
         case _ =>
@@ -855,7 +855,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
     case Event(msg: InteractiveTxBuilder.Response, d: DATA_NORMAL) => msg match {
       case InteractiveTxBuilder.SendMessage(msg) => stay() sending msg
       case InteractiveTxBuilder.Succeeded(dfu, commitment) =>
-        log.info(s"splice completed: new funding index=${commitment.fundingTxIndex} txid=${dfu.sharedTx.txId} tx=${dfu.sharedTx.signedTx_opt.getOrElse("n/a")}")
+        log.info(s"splice completed: new funding index=${commitment.fundingTxIndex} txid=${dfu.sharedTx.txId}")
         // In order to preserve sequentiality of confirmations, we only put a watch-confirmed if our previous funding tx is confirmed
         d.commitments.latest.localFundingStatus match {
           case _: LocalFundingStatus.DualFundedUnconfirmedFundingTx => () // we wait for the previous funding tx to confirm before watching the new one
@@ -867,7 +867,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
               case None => blockchain ! WatchPublished(self, commitment.fundingTxId)
             }
         }
-        val commitments1 = d.commitments.copy(active = commitment +: d.commitments.active)
+        val commitments1 = d.commitments.add(commitment)
         val d1 = d.copy(commitments = commitments1, spliceStatus = SpliceStatus.NoSplice)
         dfu.sharedTx match {
           case fundingTx: PartiallySignedSharedTransaction => stay() using d1 storing() sending fundingTx.localSigs
