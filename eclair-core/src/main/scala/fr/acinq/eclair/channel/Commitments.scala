@@ -168,7 +168,7 @@ case class Commitment(fundingTxIndex: Int,
   val fundingTxId: ByteVector32 = commitInput.outPoint.txid
   val capacity: Satoshi = commitInput.txOut.amount
   val locked: Boolean = (localFundingStatus, remoteFundingStatus) match {
-    case (_: LocalFundingStatus.ZeroconfPublishedFundingTx | _: LocalFundingStatus.ConfirmedFundingTx, _: RemoteFundingStatus.Locked.type) => true
+    case (_: LocalFundingStatus.Locked, RemoteFundingStatus.Locked) => true
     case _ => false
   }
 
@@ -268,22 +268,16 @@ case class Commitment(fundingTxIndex: Int,
     }
   }
 
-  def isIdle(changes: CommitmentChanges): Boolean =
-    localCommit.spec.htlcs.isEmpty && remoteCommit.spec.htlcs.isEmpty && nextRemoteCommit_opt.isEmpty &&
-      changes.localChanges.all.isEmpty && changes.remoteChanges.all.isEmpty
-
-
   private def hasNoPendingHtlcs: Boolean = localCommit.spec.htlcs.isEmpty && remoteCommit.spec.htlcs.isEmpty && nextRemoteCommit_opt.isEmpty
 
-  def hasNoPendingHtlcsOrFeeUpdate(changes: CommitmentChanges): Boolean =
-    nextRemoteCommit_opt.isEmpty &&
-      localCommit.spec.htlcs.isEmpty &&
-      remoteCommit.spec.htlcs.isEmpty &&
+  def hasNoPendingHtlcsOrFeeUpdate(changes: CommitmentChanges): Boolean = hasNoPendingHtlcs &&
       (changes.localChanges.signed ++ changes.localChanges.acked ++ changes.remoteChanges.signed ++ changes.remoteChanges.acked).collectFirst { case _: UpdateFee => true }.isEmpty
 
   def hasPendingOrProposedHtlcs(changes: CommitmentChanges): Boolean = !hasNoPendingHtlcs ||
     changes.localChanges.all.exists(_.isInstanceOf[UpdateAddHtlc]) ||
     changes.remoteChanges.all.exists(_.isInstanceOf[UpdateAddHtlc])
+
+  def isIdle(changes: CommitmentChanges): Boolean = hasNoPendingHtlcs && changes.localChanges.all.isEmpty && changes.remoteChanges.all.isEmpty
 
   def timedOutOutgoingHtlcs(currentHeight: BlockHeight): Set[UpdateAddHtlc] = {
     def expired(add: UpdateAddHtlc): Boolean = currentHeight >= add.cltvExpiry.blockHeight
