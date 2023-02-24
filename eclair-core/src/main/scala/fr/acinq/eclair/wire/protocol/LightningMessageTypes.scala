@@ -161,33 +161,6 @@ object TxAbort {
   def apply(channelId: ByteVector32, msg: String): TxAbort = TxAbort(channelId, ByteVector.view(msg.getBytes(Charsets.US_ASCII)))
 }
 
-case class SpliceInit(channelId: ByteVector32,
-                      lockTime: Long,
-                      feerate: FeeratePerKw,
-                      tlvStream: TlvStream[SpliceInitTlv] = TlvStream.empty) extends InteractiveTxMessage with HasChannelId {
-  val fundingContribution: Satoshi = tlvStream.get[InteractiveTxTlv.SharedOutputContributionTlv].map(_.amount).getOrElse(0 sat)
-  val pushAmount: MilliSatoshi = tlvStream.get[InteractiveTxTlv.PushAmountTlv].map(_.amount).getOrElse(0 msat)
-}
-
-object SpliceInit {
-  def apply(channelId: ByteVector32, lockTime: Long, feerate: FeeratePerKw, fundingContribution: Satoshi, pushAmount: MilliSatoshi): SpliceInit =
-    SpliceInit(channelId, lockTime, feerate, TlvStream[SpliceInitTlv](InteractiveTxTlv.SharedOutputContributionTlv(fundingContribution), InteractiveTxTlv.PushAmountTlv(pushAmount)))
-}
-
-case class SpliceAck(channelId: ByteVector32,
-                     tlvStream: TlvStream[SpliceAckTlv] = TlvStream.empty) extends InteractiveTxMessage with HasChannelId {
-  val fundingContribution: Satoshi = tlvStream.get[InteractiveTxTlv.SharedOutputContributionTlv].map(_.amount).getOrElse(0 sat)
-  val pushAmount: MilliSatoshi = tlvStream.get[InteractiveTxTlv.PushAmountTlv].map(_.amount).getOrElse(0 msat)
-}
-
-object SpliceAck {
-  def apply(channelId: ByteVector32, fundingContribution: Satoshi, pushAmount: MilliSatoshi): SpliceAck =
-    SpliceAck(channelId, TlvStream[SpliceAckTlv](InteractiveTxTlv.SharedOutputContributionTlv(fundingContribution), InteractiveTxTlv.PushAmountTlv(pushAmount)))
-}
-
-case class SpliceLocked(channelId: ByteVector32,
-                        fundingTxid: ByteVector32) extends ChannelMessage with HasChannelId
-
 case class ChannelReestablish(channelId: ByteVector32,
                               nextLocalCommitmentNumber: Long,
                               nextRemoteRevocationNumber: Long,
@@ -302,6 +275,45 @@ case class ChannelReady(channelId: ByteVector32,
                         tlvStream: TlvStream[ChannelReadyTlv] = TlvStream.empty) extends ChannelMessage with HasChannelId {
   val alias_opt: Option[Alias] = tlvStream.get[ShortChannelIdTlv].map(_.alias)
 }
+
+case class SpliceInit(channelId: ByteVector32,
+                      fundingAmount: Satoshi,
+                      lockTime: Long,
+                      feerate: FeeratePerKw,
+                      tlvStream: TlvStream[SpliceInitTlv] = TlvStream.empty) extends ChannelMessage with HasChannelId {
+  val requireConfirmedInputs: Boolean = tlvStream.get[ChannelTlv.RequireConfirmedInputsTlv].nonEmpty
+  val pushAmount: MilliSatoshi = tlvStream.get[ChannelTlv.PushAmountTlv].map(_.amount).getOrElse(0 msat)
+}
+
+object SpliceInit {
+  def apply(channelId: ByteVector32, fundingAmount: Satoshi, lockTime: Long, feerate: FeeratePerKw, pushAmount: MilliSatoshi, requireConfirmedInputs: Boolean): SpliceInit = {
+    val tlvs: Set[SpliceInitTlv] = Set(
+      Some(ChannelTlv.PushAmountTlv(pushAmount)),
+      if (requireConfirmedInputs) Some(ChannelTlv.RequireConfirmedInputsTlv()) else None,
+    ).flatten
+    SpliceInit(channelId, fundingAmount, lockTime, feerate, TlvStream(tlvs))
+  }
+}
+
+case class SpliceAck(channelId: ByteVector32,
+                     fundingAmount: Satoshi,
+                     tlvStream: TlvStream[SpliceAckTlv] = TlvStream.empty) extends ChannelMessage with HasChannelId {
+  val requireConfirmedInputs: Boolean = tlvStream.get[ChannelTlv.RequireConfirmedInputsTlv].nonEmpty
+  val pushAmount: MilliSatoshi = tlvStream.get[ChannelTlv.PushAmountTlv].map(_.amount).getOrElse(0 msat)
+}
+
+object SpliceAck {
+  def apply(channelId: ByteVector32, fundingAmount: Satoshi, pushAmount: MilliSatoshi, requireConfirmedInputs: Boolean): SpliceAck = {
+    val tlvs: Set[SpliceAckTlv] = Set(
+      Some(ChannelTlv.PushAmountTlv(pushAmount)),
+      if (requireConfirmedInputs) Some(ChannelTlv.RequireConfirmedInputsTlv()) else None,
+    ).flatten
+    SpliceAck(channelId, fundingAmount, TlvStream(tlvs))
+  }
+}
+
+case class SpliceLocked(channelId: ByteVector32,
+                        fundingTxid: ByteVector32) extends ChannelMessage with HasChannelId
 
 case class Shutdown(channelId: ByteVector32,
                     scriptPubKey: ByteVector,
