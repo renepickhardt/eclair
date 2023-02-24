@@ -220,10 +220,10 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice2bob.forward(bob)
     alice ! CMD_SIGN()
     val sig1 = alice2bob.expectMsgType[CommitSig]
-    assert(sig1.batchIndex == 1 && sig1.batchSize == 2)
+    assert(sig1.batchSize == 2)
     alice2bob.forward(bob)
     val sig2 = alice2bob.expectMsgType[CommitSig]
-    assert(sig2.batchIndex == 2 && sig1.batchSize == 2)
+    assert(sig2.batchSize == 2)
     alice2bob.forward(bob)
     bob2alice.expectMsgType[RevokeAndAck]
     bob2alice.forward(alice)

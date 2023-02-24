@@ -370,7 +370,7 @@ case class CommitSig(channelId: ByteVector32,
                      htlcSignatures: List[ByteVector64],
                      tlvStream: TlvStream[CommitSigTlv] = TlvStream.empty) extends HtlcMessage with HasChannelId {
   val fundingTxId_opt: Option[ByteVector32] = tlvStream.get[CommitSigTlv.FundingTxIdTlv].map(_.txId)
-  val (batchIndex: Int, batchSize: Int) = tlvStream.get[CommitSigTlv.BatchTlv].map(b => (b.index, b.total)).getOrElse((1, 1))
+  val batchSize: Int = tlvStream.get[CommitSigTlv.BatchTlv].map(_.size).getOrElse(1)
 }
 
 case class RevokeAndAck(channelId: ByteVector32,
