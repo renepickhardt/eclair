@@ -348,7 +348,7 @@ private[channel] object ChannelCodecs4 {
           ("commit" | remoteCommitCodec)).as[NextRemoteCommit]
 
       val commitmentCodec: Codec[Commitment] = (
-        ("fundingTxIndex" | uint16) ::
+        ("fundingTxIndex" | uint32) ::
           ("fundingTxStatus" | fundingTxStatusCodec) ::
           ("remoteFundingStatus" | remoteFundingStatusCodec) ::
           ("localCommit" | localCommitCodec) ::
