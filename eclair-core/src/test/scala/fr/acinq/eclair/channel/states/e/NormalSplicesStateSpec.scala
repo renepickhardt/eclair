@@ -362,13 +362,11 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     bob2alice.expectNoMessage(100 millis)
     // we now have two unconfirmed splices
 
+    alice2bob.ignoreMsg { case _: ChannelUpdate => true }
+    bob2alice.ignoreMsg { case _: ChannelUpdate => true }
+
     disconnect()
     reconnect()
-
-    alice2bob.expectMsgType[ChannelUpdate]
-    alice2bob.forward(bob)
-    bob2alice.expectMsgType[ChannelUpdate]
-    bob2alice.forward(bob)
 
     // channel_ready are not re-sent because the channel has already been used (for building splices)
     alice2bob.expectNoMessage(100 millis)
@@ -379,9 +377,6 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx1.txid)
     alice2bob.forward(bob)
     alice2blockchain.expectMsgType[WatchFundingSpent]
-
-    alice2bob.ignoreMsg { case _: ChannelUpdate => true }
-    bob2alice.ignoreMsg { case _: ChannelUpdate => true }
 
     disconnect()
     reconnect()

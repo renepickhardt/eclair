@@ -1331,11 +1331,8 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
 
     case Event(w: WatchFundingConfirmedTriggered, d: DATA_CLOSING) =>
       acceptFundingTxConfirmed(w, d) match {
-        case Right((commitments1, _)) =>
-          if (d.commitments.latest.fundingTxId == commitments1.latest.fundingTxId) {
-            // We're still on the same splice history, nothing to do
-            stay() using d.copy(commitments = commitments1) storing()
-          } else {
+        case Right((commitments1, commitment)) =>
+          if (d.commitments.latest.fundingTxIndex == commitment.fundingTxIndex && d.commitments.latest.fundingTxId != commitment.fundingTxId) {
             // This is a corner case where:
             //  - we are using dual funding
             //  - *and* the funding tx was RBF-ed
@@ -1349,8 +1346,16 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
             // Force-closing is our only option here, if we are in this state the channel was closing and it is too late
             // to negotiate a mutual close.
             log.info("channelId={} was confirmed at blockHeight={} txIndex={} with a previous funding txid={}", d.channelId, w.blockHeight, w.txIndex, w.tx.txid)
-            val d1 = d.copy(commitments = commitments1)
+            val commitments2 = commitments1.copy(
+              active = commitment +: Nil,
+              inactive = Nil
+            )
+            // we reset the state
+            val d1 = d.copy(commitments = commitments2)
             spendLocalCurrent(d1)
+          } else {
+            // We're still on the same splice history, nothing to do
+            stay() using d.copy(commitments = commitments1) storing()
           }
         case Left(_) => stay()
       }
@@ -1387,14 +1392,16 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       } else if (tx.txIn.map(_.outPoint.txid).contains(d.commitments.latest.fundingTxId)) {
         // counterparty may attempt to spend a revoked commit tx at any time
         handleRemoteSpentOther(tx, d)
-      } else if (d.commitments.all.exists(c => tx.txIn.map(_.outPoint.txid).contains(c.fundingTxId))) {
-        log.warning(s"a commit tx for an older commitment has been published txid=${tx.txid}")
-        // this was for another commitments
-        blockchain ! WatchAlternativeCommitTxConfirmed(self, tx.txid, nodeParams.channelConf.minDepthBlocks)
-        stay()
       } else {
-        log.warning(s"unrecognized tx=${tx.txid}")
-        stay()
+        d.commitments.resolveCommitment(tx) match {
+          case Some(commitment) =>
+            log.warning(s"a commit tx for an older commitment has been published txid=${tx.txid} fundingTxIndex=${commitment.fundingTxIndex}")
+            blockchain ! WatchAlternativeCommitTxConfirmed(self, tx.txid, nodeParams.channelConf.minDepthBlocks)
+            stay()
+          case None =>
+            // This must be a former funding tx that has already been pruned, because watches are unordered.
+            stay()
+        }
       }
 
     case Event(WatchAlternativeCommitTxConfirmedTriggered(_, _, tx), d: DATA_CLOSING) =>
@@ -1922,15 +1929,30 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       if (d.commitments.all.map(_.fundingTxId).contains(tx.txid)) {
         // if the spending tx is itself a funding tx, this is a splice and there is nothing to do
         stay()
-      } else if (tx.txid == d.commitments.latest.remoteCommit.txid) {
-        handleRemoteSpentCurrent(tx, d)
-      } else if (d.commitments.latest.nextRemoteCommit_opt.exists(_.commit.txid == tx.txid)) {
-        handleRemoteSpentNext(tx, d)
-      } else if (tx.txid == d.commitments.latest.localCommit.commitTxAndRemoteSig.commitTx.tx.txid) {
-        log.warning(s"processing local commit spent from the outside")
-        spendLocalCurrent(d)
       } else {
-        handleRemoteSpentOther(tx, d)
+        d.commitments.resolveCommitment(tx) match {
+          case Some(commitment) =>
+            if (commitment.fundingTxId == d.commitments.latest.fundingTxId) {
+              if (tx.txid == d.commitments.latest.remoteCommit.txid) {
+                handleRemoteSpentCurrent(tx, d)
+              } else if (d.commitments.latest.nextRemoteCommit_opt.exists(_.commit.txid == tx.txid)) {
+                handleRemoteSpentNext(tx, d)
+              } else if (tx.txid == d.commitments.latest.localCommit.commitTxAndRemoteSig.commitTx.tx.txid) {
+                log.warning(s"processing local commit spent from the outside")
+                spendLocalCurrent(d)
+              } else {
+                handleRemoteSpentOther(tx, d)
+              }
+            } else {
+              log.warning(s"a commit tx for an older commitment has been published txid=${tx.txid} fundingTxIndex=${commitment.fundingTxIndex}")
+              // we watch the commitment tx, in the meantime we force close using the latest commitment
+              blockchain ! WatchAlternativeCommitTxConfirmed(self, tx.txid, nodeParams.channelConf.minDepthBlocks)
+              spendLocalCurrent(d)
+            }
+          case None =>
+            // This must be a former funding tx that has already been pruned, because watches are unordered.
+            stay()
+        }
       }
   }
 
