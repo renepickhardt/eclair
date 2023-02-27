@@ -3,7 +3,7 @@ package fr.acinq.eclair.channel
 import akka.event.LoggingAdapter
 import com.softwaremill.quicklens.ModifyPimp
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey}
-import fr.acinq.bitcoin.scalacompat.{ByteVector32, ByteVector64, Crypto, Satoshi, SatoshiLong, Script}
+import fr.acinq.bitcoin.scalacompat.{ByteVector32, ByteVector64, Crypto, Satoshi, SatoshiLong, Script, Transaction}
 import fr.acinq.eclair.blockchain.fee.{FeeratePerKw, OnChainFeeConf}
 import fr.acinq.eclair.channel.Helpers.Closing
 import fr.acinq.eclair.channel.Monitoring.Metrics
@@ -1053,7 +1053,7 @@ case class Commitments(params: ChannelParams,
           log.info(s"setting remoteFundingStatus=${RemoteFundingStatus.Locked.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
           c.copy(remoteFundingStatus = RemoteFundingStatus.Locked)
         case c => c
-      }).deactivateCommitments()
+      }).deactivateCommitments().pruneCommitments()
       val commitment = commitments1.active.find(_.fundingTxId == txId).get
       Right(commitments1, commitment)
     }
@@ -1071,7 +1071,7 @@ case class Commitments(params: ChannelParams,
       .lastOption match {
       case Some(lastLocked) =>
         // all commitments older than this one are inactive
-        val inactive1 = active.filter(c => c.fundingTxIndex < lastLocked.fundingTxIndex)
+        val inactive1 = active.filter(c => c.fundingTxId != lastLocked.fundingTxId && c.fundingTxIndex <= lastLocked.fundingTxIndex)
         val active1 = active diff inactive1
         inactive1.foreach(c => log.info("deactivating commitment index={} fundingTxid={}", c.fundingTxIndex, c.fundingTxId))
         copy(active = active1, inactive = inactive1 ++ inactive)
@@ -1081,25 +1081,33 @@ case class Commitments(params: ChannelParams,
   }
 
   /**
-   * We can prune commitments in two cases:
+   * We can prune inactive commitments in two cases:
    * - their funding tx has been permanently double-spent by the funding tx of a concurrent commitments (happens when using RBF)
    * - their funding tx has been permanently spent by a splice tx
    */
   def pruneCommitments()(implicit log: LoggingAdapter): Commitments = {
-    all
+    inactive
       .filter(_.localFundingStatus.isInstanceOf[LocalFundingStatus.ConfirmedFundingTx])
       .sortBy(_.fundingTxIndex)
       .lastOption match {
       case Some(lastConfirmed) =>
         // we can prune all other commitments with the same or lower funding index
-        val pruned = all.filter(c => c.fundingTxId != lastConfirmed.fundingTxId && c.fundingTxIndex <= lastConfirmed.fundingTxIndex)
-        val active1 = active diff pruned
+        val pruned = inactive.filter(c => c.fundingTxId != lastConfirmed.fundingTxId && c.fundingTxIndex <= lastConfirmed.fundingTxIndex)
         val inactive1 = inactive diff pruned
         pruned.foreach(c => log.info("pruning commitment index={} fundingTxid={}", c.fundingTxIndex, c.fundingTxId))
-        copy(active = active1, inactive = inactive1)
+        copy(inactive = inactive1)
       case _ =>
         this
     }
+  }
+
+  /**
+   * Find the corresponding commitment, based on a spending transaction.
+   *
+   * @param spendingTx A transaction that may spend a current or former funding tx
+   */
+  def resolveCommitment(spendingTx: Transaction): Option[Commitment] = {
+    all.find(c => spendingTx.txIn.map(_.outPoint.txid).contains(c.fundingTxId))
   }
 }
 
