@@ -1078,7 +1078,7 @@ object Helpers {
             log.info(s"channel uses option_static_remotekey to pay directly to our wallet, there is nothing to do")
             None
           case ct => ct.commitmentFormat match {
-            case DefaultCommitmentFormat => withTxGenerationLog("claim-p2wpkh-output") {
+            case DefaultCommitmentFormat => withTxGenerationLog("remote-main") {
               Transactions.makeClaimP2WPKHOutputTx(commitTx, localParams.dustLimit, localPaymentPubkey, finalScriptPubKey, feeratePerKwMain).map(claimMain => {
                 val sig = keyManager.sign(claimMain, keyManager.paymentPoint(channelKeyPath), remotePerCommitmentPoint, TxOwner.Local, commitmentFormat)
                 Transactions.addSigs(claimMain, localPaymentPubkey, sig)
