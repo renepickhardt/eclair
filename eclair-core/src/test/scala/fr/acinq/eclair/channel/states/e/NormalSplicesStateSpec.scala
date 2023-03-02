@@ -115,13 +115,13 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     val initialState = alice.stateData.asInstanceOf[DATA_NORMAL]
     assert(initialState.commitments.latest.capacity == 1_500_000.sat)
     assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
-    assert(initialState.commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
+    assert(initialState.commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
 
     initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
 
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.capacity == 2_000_000.sat)
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toLocal == 1_300_000_000.msat)
-    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
   }
 
   test("recv CMD_SPLICE (splice-out)") { f =>
@@ -130,7 +130,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     val initialState = alice.stateData.asInstanceOf[DATA_NORMAL]
     assert(initialState.commitments.latest.capacity == 1_500_000.sat)
     assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
-    assert(initialState.commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
+    assert(initialState.commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
 
     initiateSplice(f, spliceOut_opt = Some(SpliceOut(100_000 sat, ByteVector32.Zeroes)))
 
@@ -142,7 +142,23 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(actualMiningFee - expectedMiningFee < 100.sat || expectedMiningFee - actualMiningFee < 100.sat)
     // initiator pays the fee
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toLocal == 700_000_000.msat - actualMiningFee)
-    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.remoteCommit.spec.toLocal == 700_000_000.msat)
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
+  }
+
+  test("recv CMD_SPLICE (splice-in + splice-out)") { f =>
+    import f._
+
+    val initialState = alice.stateData.asInstanceOf[DATA_NORMAL]
+    assert(initialState.commitments.latest.capacity == 1_500_000.sat)
+    assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
+    assert(initialState.commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
+
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)), spliceOut_opt = Some(SpliceOut(100_000 sat, ByteVector32.Zeroes)))
+
+    // NB: since there is a splice-in, swap-out fees will be paid from bitcoind so final capacity is predictable
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.capacity == 1_900_000.sat)
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toLocal == 1_200_000_000.msat)
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
   }
 
   test("recv WatchFundingConfirmedTriggered on splice tx", Tag(NoMaxHtlcValueInFlight)) { f =>
