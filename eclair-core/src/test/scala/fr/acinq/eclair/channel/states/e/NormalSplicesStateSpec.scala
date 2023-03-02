@@ -33,6 +33,7 @@ import fr.acinq.eclair.wire.protocol._
 import org.scalatest.funsuite.FixtureAnyFunSuiteLike
 import org.scalatest.time.SpanSugar.convertIntToGrainOfTime
 import org.scalatest.{Outcome, Tag}
+import fr.acinq.eclair.testutils.PimpTestProbe.convert
 
 /**
  * Created by PM on 23/12/2022.
@@ -188,32 +189,121 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     bob2alice.forward(alice)
   }
 
-  test("recv WatchFundingConfirmedTriggered with two unconfirmed splice txs", Tag(NoMaxHtlcValueInFlight)) { f =>
+  private def setup2Splices(f: FixtureParam): (Transaction, Transaction) = {
     import f._
 
     initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
-    val watchConfirmed1 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
-    alice2blockchain.expectNoMessage(100 millis)
     val fundingTx1 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
-    assert(fundingTx1.txid == watchConfirmed1.txId)
+    alice2blockchain.expectWatchFundingConfirmed(fundingTx1.txid)
+    alice2blockchain.expectNoMessage(100 millis)
+    bob2blockchain.expectWatchFundingConfirmed(fundingTx1.txid)
+    bob2blockchain.expectNoMessage(100 millis)
 
     initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
-    val watchConfirmed2 = alice2blockchain.expectMsgType[WatchFundingConfirmed]
-    alice2blockchain.expectNoMessage(100 millis)
     val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
-    assert(fundingTx2.txid == watchConfirmed2.txId)
+    alice2blockchain.expectWatchFundingConfirmed(fundingTx2.txid)
+    alice2blockchain.expectNoMessage(100 millis)
+    bob2blockchain.expectWatchFundingConfirmed(fundingTx2.txid)
+    bob2blockchain.expectNoMessage(100 millis)
+
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2, 1, 0))
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
+    assert(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2, 1, 0))
+    assert(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
+
+    (fundingTx1, fundingTx2)
+  }
+
+  test("recv WatchFundingConfirmedTriggered with two unconfirmed splice txs", Tag(NoMaxHtlcValueInFlight)) { f =>
+    import f._
+
+    val (fundingTx1, fundingTx2) = setup2Splices(f)
 
     // splice 1 confirms
-    watchConfirmed1.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
-    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx1.txid)
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    alice2bob.expectMsgTypeHaving[SpliceLocked](_.fundingTxid == fundingTx1.txid)
     alice2bob.forward(bob)
-    assert(alice2blockchain.expectMsgType[WatchFundingSpent].txId == fundingTx1.txid)
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    bob2alice.expectMsgTypeHaving[SpliceLocked](_.fundingTxid == fundingTx1.txid)
+    bob2alice.forward(alice)
+    alice2blockchain.expectWatchFundingSpent(fundingTx1.txid)
+    bob2blockchain.expectWatchFundingSpent(fundingTx1.txid)
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2, 1))
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
 
     // splice 2 confirms
-    watchConfirmed2.replyTo ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
-    assert(alice2bob.expectMsgType[SpliceLocked].fundingTxid == fundingTx2.txid)
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    alice2bob.expectMsgTypeHaving[SpliceLocked](_.fundingTxid == fundingTx2.txid)
     alice2bob.forward(bob)
-    assert(alice2blockchain.expectMsgType[WatchFundingSpent].txId == fundingTx2.txid)
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    bob2alice.expectMsgTypeHaving[SpliceLocked](_.fundingTxid == fundingTx2.txid)
+    bob2alice.forward(alice)
+    alice2blockchain.expectWatchFundingSpent(fundingTx2.txid)
+    bob2blockchain.expectWatchFundingSpent(fundingTx2.txid)
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2))
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
+  }
+
+  test("recv WatchFundingConfirmedTriggered with two unconfirmed splice txs (reverse order)", Tag(NoMaxHtlcValueInFlight)) { f =>
+    import f._
+
+    val (fundingTx1, fundingTx2) = setup2Splices(f)
+
+    // splice 2 confirms
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    alice2bob.expectMsgTypeHaving[SpliceLocked](_.fundingTxid == fundingTx2.txid)
+    alice2bob.forward(bob)
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    bob2alice.expectMsgTypeHaving[SpliceLocked](_.fundingTxid == fundingTx2.txid)
+    bob2alice.forward(alice)
+    alice2blockchain.expectWatchFundingSpent(fundingTx2.txid)
+    bob2blockchain.expectWatchFundingSpent(fundingTx2.txid)
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2))
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
+
+    // splice 1 confirms
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    // we don't send a splice_locked for the older tx
+    alice2bob.expectNoMessage(100 millis)
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    // we don't send a splice_locked for the older tx
+    bob2alice.expectNoMessage(100 millis)
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2))
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
+  }
+
+  test("recv WatchFundingConfirmedTriggered with two unconfirmed splice txs (intermingled)", Tag(NoMaxHtlcValueInFlight)) { f =>
+    import f._
+
+    val (fundingTx1, fundingTx2) = setup2Splices(f)
+
+    // splice 1 confirms on alice, splice 2 confirms on bob
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    alice2bob.expectMsgTypeHaving[SpliceLocked](_.fundingTxid == fundingTx1.txid)
+    alice2bob.forward(bob)
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    bob2alice.expectMsgTypeHaving[SpliceLocked](_.fundingTxid == fundingTx2.txid)
+    bob2alice.forward(alice)
+    alice2blockchain.expectWatchFundingSpent(fundingTx1.txid)
+    bob2blockchain.expectWatchFundingSpent(fundingTx2.txid)
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2, 1))
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
+    assert(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2, 1))
+    assert(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
+
+    // splice 2 confirms on bob, splice 1 confirms on alice
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    alice2bob.expectMsgTypeHaving[SpliceLocked](_.fundingTxid == fundingTx2.txid)
+    alice2bob.forward(bob)
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    bob2alice.expectNoMessage(100 millis)
+    bob2alice.forward(alice)
+    alice2blockchain.expectWatchFundingSpent(fundingTx2.txid)
+    bob2blockchain.expectNoMessage(100 millis)
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2))
+    assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
+    assert(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2))
+    assert(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
   }
 
   test("recv CMD_ADD_HTLC with multiple commitments") { f =>
@@ -333,6 +423,22 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice ! INPUT_DISCONNECTED
     awaitCond(alice.stateName == OFFLINE)
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].spliceStatus == SpliceStatus.NoSplice)
+  }
+
+  test("don't resend splice_locked when zero-conf channel confirms", Tag(ChannelStateTestsTags.ZeroConf), Tag(ChannelStateTestsTags.AnchorOutputsZeroFeeHtlcTxs)) { f =>
+    import f._
+
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
+    val fundingTx = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    alice2blockchain.expectMsgType[WatchPublished]
+    // splice tx gets published, alice sends splice_locked
+    alice ! WatchPublishedTriggered(fundingTx)
+    alice2bob.expectMsgType[SpliceLocked]
+    alice2blockchain.expectWatchFundingConfirmed(fundingTx.txid)
+    // splice tx confirms
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx)
+    alice2bob.expectNoMessage(100 millis)
+    alice2blockchain.expectWatchFundingSpent(fundingTx.txid)
   }
 
   test("re-send splice_locked on reconnection") { f =>
