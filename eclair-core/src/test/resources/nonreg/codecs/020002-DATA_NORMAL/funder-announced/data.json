@@ -81,6 +81,7 @@
       "remoteNextHtlcId" : 0
     },
     "active" : [ {
+      "fundingTxIndex" : 0,
       "fundingTx" : {
         "outPoint" : "1bade1718aaf98ab1f91a97ed5b34ab47bfb78085e384f67c156793544f68659:0",
         "amountSatoshis" : 15000000

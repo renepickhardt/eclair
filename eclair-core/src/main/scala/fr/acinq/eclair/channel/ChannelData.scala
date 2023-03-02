@@ -206,7 +206,7 @@ final case class CMD_FORCECLOSE(replyTo: ActorRef) extends CloseCommand
 
 final case class CMD_BUMP_FUNDING_FEE(replyTo: akka.actor.typed.ActorRef[CommandResponse[CMD_BUMP_FUNDING_FEE]], targetFeerate: FeeratePerKw, lockTime: Long) extends Command
 case class SpliceIn(additionalLocalFunding: Satoshi, pushAmount: MilliSatoshi = 0.msat)
-case class SpliceOut(amount: Satoshi, pubKeyScript: ByteVector)
+case class SpliceOut(amount: Satoshi, scriptPubKey: ByteVector)
 final case class CMD_SPLICE(replyTo: ActorRef, spliceIn_opt: Option[SpliceIn], spliceOut_opt: Option[SpliceOut]) extends HasReplyToCommand {
   require(spliceIn_opt.isDefined || spliceOut_opt.isDefined, "there must be a splice-in or a splice-out")
   val additionalLocalFunding: Satoshi = spliceIn_opt.map(_.additionalLocalFunding).getOrElse(0L.sat)

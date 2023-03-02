@@ -93,6 +93,8 @@ trait Eclair {
 
   def spliceIn(channelId: ByteVector32, amountIn: Satoshi, pushAmount_opt: Option[MilliSatoshi])(implicit timeout: Timeout): Future[CommandResponse[CMD_SPLICE]]
 
+  def spliceOut(channelId: ByteVector32, amountOut: Satoshi, scriptPubKey: ByteVector)(implicit timeout: Timeout): Future[CommandResponse[CMD_SPLICE]]
+
   def close(channels: List[ApiTypes.ChannelIdentifier], scriptPubKey_opt: Option[ByteVector], closingFeerates_opt: Option[ClosingFeerates])(implicit timeout: Timeout): Future[Map[ApiTypes.ChannelIdentifier, Either[Throwable, CommandResponse[CMD_CLOSE]]]]
 
   def forceClose(channels: List[ApiTypes.ChannelIdentifier])(implicit timeout: Timeout): Future[Map[ApiTypes.ChannelIdentifier, Either[Throwable, CommandResponse[CMD_FORCECLOSE]]]]
@@ -216,6 +218,14 @@ class EclairImpl(appKit: Kit) extends Eclair with Logging {
     val cmd = CMD_SPLICE(ActorRef.noSender,
       spliceIn_opt = Some(SpliceIn(additionalLocalFunding = amountIn, pushAmount = pushAmount_opt.getOrElse(0.msat))),
       spliceOut_opt = None
+    )
+    sendToChannel(Left(channelId), cmd)
+  }
+
+  override def spliceOut(channelId: ByteVector32, amountOut: Satoshi, scriptPubKey: ByteVector)(implicit timeout: Timeout): Future[CommandResponse[CMD_SPLICE]] = {
+    val cmd = CMD_SPLICE(ActorRef.noSender,
+      spliceIn_opt = None,
+      spliceOut_opt = Some(SpliceOut(amount = amountOut, scriptPubKey = scriptPubKey))
     )
     sendToChannel(Left(channelId), cmd)
   }

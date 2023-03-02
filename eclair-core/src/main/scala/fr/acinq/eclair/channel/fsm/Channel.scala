@@ -753,7 +753,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
                 isInitiator = true,
                 commitment = d.commitments.active.head,
                 spliceInAmount = cmd.additionalLocalFunding,
-                spliceOut = cmd.spliceOut_opt.toList.map(s => TxOut(s.amount, s.pubKeyScript)),
+                spliceOut = cmd.spliceOut_opt.toList.map(s => TxOut(s.amount, s.scriptPubKey)),
                 targetFeerate = targetFeerate),
               lockTime = nodeParams.currentBlockHeight.toLong,
               feerate = targetFeerate,
@@ -832,7 +832,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
             remoteAmount = msg.fundingAmount,
             sharedInput_opt = Some(Multisig2of2Input(keyManager, d.commitments.params, parentCommitments.commitment)),
             fundingPubkeyScript = parentCommitments.commitInput.txOut.publicKeyScript, // same pubkey script as before
-            localOutputs = cmd.spliceOut_opt.toList.map(s => TxOut(s.amount, s.pubKeyScript)),
+            localOutputs = cmd.spliceOut_opt.toList.map(s => TxOut(s.amount, s.scriptPubKey)),
             lockTime = spliceInit.lockTime,
             dustLimit = d.commitments.params.localParams.dustLimit.max(d.commitments.params.remoteParams.dustLimit),
             targetFeerate = spliceInit.feerate,
