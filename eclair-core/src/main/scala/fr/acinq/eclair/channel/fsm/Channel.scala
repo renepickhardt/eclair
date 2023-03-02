@@ -20,7 +20,6 @@ import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.scaladsl.adapter.{ClassicActorContextOps, actorRefAdapter}
 import akka.actor.{Actor, ActorContext, ActorRef, FSM, OneForOneStrategy, PossiblyHarmful, Props, Status, SupervisorStrategy, typed}
 import akka.event.Logging.MDC
-import com.softwaremill.quicklens.{ModifyPimp, QuicklensAt}
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey}
 import fr.acinq.bitcoin.scalacompat.{Block, ByteVector32, Satoshi, SatoshiLong, Transaction, TxOut}
 import fr.acinq.eclair.Features.DualFunding
@@ -942,7 +941,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
     case Event(w: WatchFundingConfirmedTriggered, d: DATA_NORMAL) =>
       acceptFundingTxConfirmed(w, d) match {
         case Right((commitments1, _)) =>
-          val toSend = d.commitments.active
+          val toSend = d.commitments.all
             .find(_.fundingTxId == w.tx.txid).get // will always be found since we are in the Right() handler
             .localFundingStatus match {
             // check if the funding status just moved from NotLocked to Locked
@@ -1408,16 +1407,26 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       d.commitments.all
         .find(c => tx.txIn.map(_.outPoint.txid).contains(c.fundingTxId)) match {
         case Some(commitment) =>
-          log.info("hmm.... there has been a change of plan, a commit tx for fundingTxIndex={} fundingTxid={} has been confirmed", commitment.fundingTxIndex, commitment.fundingTxId)
+          log.warning("a commit tx for fundingTxIndex={} fundingTxid={} has been confirmed", commitment.fundingTxIndex, commitment.fundingTxId)
           val commitments1 = d.commitments.copy(
             active = commitment +: Nil,
             inactive = Nil
           )
           // we reset the state
           val d1 = d.copy(commitments = commitments1)
-          // and we replay history
-          self ! WatchFundingSpentTriggered(tx)
-          stay() using d1 storing()
+          if (d.localCommitPublished.exists(_.commitTx.txid == tx.txid)) {
+            // our local commit has been published from the outside, it's unexpected but let's deal with it anyway
+            spendLocalCurrent(d1)
+          } else if (commitment.remoteCommit.txid == tx.txid && commitment.remoteCommit.index == d.commitments.remoteCommitIndex) {
+            // counterparty may attempt to spend its last commit tx at any time
+            handleRemoteSpentCurrent(tx, d1)
+          } else if (commitment.nextRemoteCommit_opt.exists(_.commit.txid == tx.txid) && commitment.remoteCommit.index == d.commitments.remoteCommitIndex && d.commitments.remoteNextCommitInfo.isLeft) {
+            // counterparty may attempt to spend its last commit tx at any time
+            handleRemoteSpentNext(tx, d1)
+          } else {
+            // counterparty may attempt to spend a revoked commit tx at any time
+            handleRemoteSpentOther(tx, d1)
+          }
         case None =>
           log.warning(s"unrecognized alternative commit tx=${tx.txid}")
           stay()
