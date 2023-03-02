@@ -940,13 +940,13 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
 
     case Event(w: WatchFundingConfirmedTriggered, d: DATA_NORMAL) =>
       acceptFundingTxConfirmed(w, d) match {
-        case Right((commitments1, _)) =>
-          val toSend = d.commitments.all
-            .find(_.fundingTxId == w.tx.txid).get // will always be found since we are in the Right() handler
-            .localFundingStatus match {
-            // check if the funding status just moved from NotLocked to Locked
-            case _: LocalFundingStatus.NotLocked => Some(SpliceLocked(d.channelId, w.tx.txid))
-            case _: LocalFundingStatus.Locked => None // this was a zero-conf splice, we already sent our splice_locked
+        case Right((commitments1, commitment)) =>
+          val toSend = if (d.commitments.all.exists(c => c.fundingTxId == commitment.fundingTxId && c.localFundingStatus.isInstanceOf[LocalFundingStatus.NotLocked])) {
+            // this commitment just moved from NotLocked to Locked
+            Some(SpliceLocked(d.channelId, w.tx.txid))
+          } else {
+            // this was a zero-conf splice and we already sent our splice_locked
+            None
           }
           stay() using d.copy(commitments = commitments1) storing() sending toSend.toSeq
         case Left(_) => stay()

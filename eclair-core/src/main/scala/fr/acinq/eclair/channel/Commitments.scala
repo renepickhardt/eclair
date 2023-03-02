@@ -271,7 +271,7 @@ case class Commitment(fundingTxIndex: Long,
   private def hasNoPendingHtlcs: Boolean = localCommit.spec.htlcs.isEmpty && remoteCommit.spec.htlcs.isEmpty && nextRemoteCommit_opt.isEmpty
 
   def hasNoPendingHtlcsOrFeeUpdate(changes: CommitmentChanges): Boolean = hasNoPendingHtlcs &&
-      (changes.localChanges.signed ++ changes.localChanges.acked ++ changes.remoteChanges.signed ++ changes.remoteChanges.acked).collectFirst { case _: UpdateFee => true }.isEmpty
+    (changes.localChanges.signed ++ changes.localChanges.acked ++ changes.remoteChanges.signed ++ changes.remoteChanges.acked).collectFirst { case _: UpdateFee => true }.isEmpty
 
   def hasPendingOrProposedHtlcs(changes: CommitmentChanges): Boolean = !hasNoPendingHtlcs ||
     changes.localChanges.all.exists(_.isInstanceOf[UpdateAddHtlc]) ||
@@ -1028,43 +1028,46 @@ case class Commitments(params: ChannelParams,
   }
 
   def updateLocalFundingStatus(txId: ByteVector32, status: LocalFundingStatus)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
-    def updateMethod: PartialFunction[Commitment, Commitment] = {
-      case c if c.fundingTxId == txId =>
-        log.info(s"setting localFundingStatus=${status.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
-        c.copy(localFundingStatus = status)
-      case c => c
-    }
+    all.find(_.fundingTxId == txId) match {
+      case Some(commitment) =>
+        def updateMethod: PartialFunction[Commitment, Commitment] = {
+          case c if c.fundingTxId == commitment.fundingTxId || c.fundingTxIndex < commitment.fundingTxIndex =>
+            log.info(s"setting localFundingStatus=${status.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
+            c.copy(localFundingStatus = status)
+          case c => c
+        }
 
-    if (!all.exists(_.fundingTxId == txId)) {
-      log.warning(s"funding txid=$txId doesn't match any of our funding txs")
-      Left(this)
-    } else {
-      val commitments1 = copy(
-        active = active.map(updateMethod),
-        inactive = inactive.map(updateMethod)
-      ).deactivateCommitments().pruneCommitments()
-      val commitment = commitments1.all.find(_.fundingTxId == txId).get
-      Right(commitments1, commitment)
+        val commitments1 = copy(
+          active = active.map(updateMethod),
+          inactive = inactive.map(updateMethod)
+        ).deactivateCommitments().pruneCommitments()
+        val commitment1 = commitments1.all.find(_.fundingTxId == txId).get
+        Right(commitments1, commitment1)
+      case None =>
+        log.warning(s"funding txid=$txId doesn't match any of our funding txs")
+        Left(this)
     }
   }
 
   def updateRemoteFundingStatus(txId: ByteVector32)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
-    def updateMethod: PartialFunction[Commitment, Commitment] = {
-      case c if c.fundingTxId == txId =>
-        log.info(s"setting remoteFundingStatus=${RemoteFundingStatus.Locked.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
-        c.copy(remoteFundingStatus = RemoteFundingStatus.Locked)
-      case c => c
-    }
-    if (!all.exists(_.fundingTxId == txId)) {
-      log.warning(s"funding txid=$txId doesn't match any of our funding txs")
-      Left(this)
-    } else {
-      val commitments1 = copy(
-        active = active.map(updateMethod),
-        inactive = inactive.map(updateMethod)
-      ).deactivateCommitments().pruneCommitments()
-      val commitment = commitments1.all.find(_.fundingTxId == txId).get
-      Right(commitments1, commitment)
+    all.find(_.fundingTxId == txId) match {
+      case Some(commitment) =>
+        def updateMethod: PartialFunction[Commitment, Commitment] = {
+          case c if c.fundingTxId == commitment.fundingTxId || c.fundingTxIndex < commitment.fundingTxIndex =>
+            log.info(s"setting remoteFundingStatus=${RemoteFundingStatus.Locked.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
+            c.copy(remoteFundingStatus = RemoteFundingStatus.Locked)
+          case c => c
+        }
+
+        val commitments1 = copy(
+          active = active.map(updateMethod),
+          inactive = inactive.map(updateMethod)
+        ).deactivateCommitments().pruneCommitments()
+        val commitment1 = commitments1.all.find(_.fundingTxId == txId).get
+        Right(commitments1, commitment1)
+      case None =>
+        log.warning(s"funding txid=$txId doesn't match any of our funding txs")
+        Left(this)
     }
   }
 
@@ -1095,7 +1098,7 @@ case class Commitments(params: ChannelParams,
    * - their funding tx has been permanently spent by a splice tx
    */
   def pruneCommitments()(implicit log: LoggingAdapter): Commitments = {
-    inactive
+    all
       .filter(_.localFundingStatus.isInstanceOf[LocalFundingStatus.ConfirmedFundingTx])
       .sortBy(_.fundingTxIndex)
       .lastOption match {
