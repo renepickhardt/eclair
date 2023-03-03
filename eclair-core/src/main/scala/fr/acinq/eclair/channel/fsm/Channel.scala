@@ -746,21 +746,28 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       d.spliceStatus match {
         case SpliceStatus.NoSplice =>
           if (d.commitments.isIdle && d.commitments.params.channelFeatures.hasFeature(DualFunding)) {
-            log.info(s"initiating splice with local.in.amount=${cmd.additionalLocalFunding} local.in.push=${cmd.pushAmount} out.amount=${cmd.spliceOut_opt.map(_.amount).sum}")
             val targetFeerate = nodeParams.onChainFeeConf.feeEstimator.getFeeratePerKw(target = nodeParams.onChainFeeConf.feeTargets.fundingBlockTarget)
-            val spliceInit = SpliceInit(d.channelId,
-              fundingAmount = InteractiveTxBuilder.computeLocalContribution(
-                isInitiator = true,
-                commitment = d.commitments.active.head,
-                spliceInAmount = cmd.additionalLocalFunding,
-                spliceOut = cmd.spliceOut_opt.toList.map(s => TxOut(s.amount, s.scriptPubKey)),
-                targetFeerate = targetFeerate),
-              lockTime = nodeParams.currentBlockHeight.toLong,
-              feerate = targetFeerate,
-              pushAmount = cmd.pushAmount,
-              requireConfirmedInputs = nodeParams.channelConf.requireConfirmedInputsForDualFunding
-            )
-            stay() using d.copy(spliceStatus = SpliceStatus.SpliceRequested(cmd.copy(replyTo = replyTo), spliceInit)) sending spliceInit
+            val fundingAmount = InteractiveTxBuilder.computeLocalContribution(
+              isInitiator = true,
+              commitment = d.commitments.active.head,
+              spliceInAmount = cmd.additionalLocalFunding,
+              spliceOut = cmd.spliceOut_opt.toList.map(s => TxOut(s.amount, s.scriptPubKey)),
+              targetFeerate = targetFeerate)
+            if (fundingAmount < 0.sat) {
+              log.warning("cannot do splice: insufficient funds")
+              replyTo ! Status.Failure(InvalidSpliceRequest(d.channelId))
+              stay()
+            } else {
+              log.info(s"initiating splice with local.in.amount=${cmd.additionalLocalFunding} local.in.push=${cmd.pushAmount} out.amount=${cmd.spliceOut_opt.map(_.amount).sum}")
+              val spliceInit = SpliceInit(d.channelId,
+                fundingAmount = fundingAmount,
+                lockTime = nodeParams.currentBlockHeight.toLong,
+                feerate = targetFeerate,
+                pushAmount = cmd.pushAmount,
+                requireConfirmedInputs = nodeParams.channelConf.requireConfirmedInputsForDualFunding
+              )
+              stay() using d.copy(spliceStatus = SpliceStatus.SpliceRequested(cmd.copy(replyTo = replyTo), spliceInit)) sending spliceInit
+            }
           } else {
             log.warning("cannot do splice")
             replyTo ! Status.Failure(CommandUnavailableInThisState(d.channelId, "splice", NORMAL))

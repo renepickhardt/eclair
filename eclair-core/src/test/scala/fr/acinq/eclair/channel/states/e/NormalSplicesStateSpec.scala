@@ -37,6 +37,7 @@ import fr.acinq.eclair.wire.protocol._
 import org.scalatest.funsuite.FixtureAnyFunSuiteLike
 import org.scalatest.time.SpanSugar.convertIntToGrainOfTime
 import org.scalatest.{Outcome, Tag}
+import scodec.bits.ByteVector
 
 /**
  * Created by PM on 23/12/2022.
@@ -149,6 +150,40 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     // initiator pays the fee
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toLocal == 700_000_000.msat - actualMiningFee)
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
+  }
+
+  test("recv CMD_SPLICE (splice-out, would go below reserve)") { f =>
+    import f._
+
+    val initialState = alice.stateData.asInstanceOf[DATA_NORMAL]
+    assert(initialState.commitments.latest.capacity == 1_500_000.sat)
+    assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
+    assert(initialState.commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
+
+    val sender = TestProbe()
+    val cmd = CMD_SPLICE(sender.ref, spliceIn_opt = None, Some(SpliceOut(790_000 sat, ByteVector32.Zeroes)))
+    alice ! cmd
+    alice2bob.expectMsgType[SpliceInit]
+    alice2bob.forward(bob)
+    bob2alice.expectMsgType[SpliceAck]
+    bob2alice.forward(alice)
+    sender.expectMsgType[RES_SUCCESS[CMD_SPLICE]]
+    alice2bob.expectMsgType[TxAddInput]
+    alice2bob.forward(bob)
+    bob2alice.expectMsgType[TxComplete]
+    bob2alice.forward(alice)
+    alice2bob.expectMsgType[TxAddOutput]
+    alice2bob.forward(bob)
+    bob2alice.expectMsgType[TxComplete]
+    bob2alice.forward(alice)
+    alice2bob.expectMsgType[TxAddOutput]
+    alice2bob.forward(bob)
+    bob2alice.expectMsgType[TxComplete]
+    bob2alice.forward(alice)
+    alice2bob.expectMsgType[TxComplete]
+    alice2bob.forward(bob)
+    bob2alice.expectMsgType[TxAbort]
+    bob2alice.forward(alice)
   }
 
   test("recv CMD_SPLICE (splice-in + splice-out)") { f =>
