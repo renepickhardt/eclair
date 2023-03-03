@@ -1031,7 +1031,7 @@ case class Commitments(params: ChannelParams,
     all.find(_.fundingTxId == txId) match {
       case Some(commitment) =>
         def updateMethod: PartialFunction[Commitment, Commitment] = {
-          case c if c.fundingTxId == commitment.fundingTxId || c.fundingTxIndex < commitment.fundingTxIndex =>
+          case c if c.fundingTxId == commitment.fundingTxId =>
             log.info(s"setting localFundingStatus=${status.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
             c.copy(localFundingStatus = status)
           case c => c
@@ -1053,6 +1053,7 @@ case class Commitments(params: ChannelParams,
     all.find(_.fundingTxId == txId) match {
       case Some(commitment) =>
         def updateMethod: PartialFunction[Commitment, Commitment] = {
+          // all funding older by this one are considered locked
           case c if c.fundingTxId == commitment.fundingTxId || c.fundingTxIndex < commitment.fundingTxIndex =>
             log.info(s"setting remoteFundingStatus=${RemoteFundingStatus.Locked.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
             c.copy(remoteFundingStatus = RemoteFundingStatus.Locked)
@@ -1077,10 +1078,10 @@ case class Commitments(params: ChannelParams,
    * [[pruneCommitments()]], when the next funding tx confirms.
    */
   def deactivateCommitments()(implicit log: LoggingAdapter): Commitments = {
-    active
-      .filter(_.locked)
-      .sortBy(_.fundingTxIndex)
-      .lastOption match {
+    val lastLocalLockedIndex: Long = active.filter(_.localFundingStatus.isInstanceOf[LocalFundingStatus.Locked]).map(_.fundingTxIndex).maxOption.getOrElse(-1)
+    val lastRemoteLockedIndex: Long = active.filter(_.remoteFundingStatus == RemoteFundingStatus.Locked).map(_.fundingTxIndex).maxOption.getOrElse(-1)
+    val lastLockedIndex = Math.min(lastLocalLockedIndex, lastRemoteLockedIndex)
+    active.find(_.fundingTxIndex == lastLockedIndex) match {
       case Some(lastLocked) =>
         // all commitments older than this one are inactive
         val inactive1 = active.filter(c => c.fundingTxId != lastLocked.fundingTxId && c.fundingTxIndex <= lastLocked.fundingTxIndex)
