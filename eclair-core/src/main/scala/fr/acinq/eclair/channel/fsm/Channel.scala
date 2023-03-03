@@ -253,7 +253,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
 
       // we watch all unconfirmed funding txs, whatever our state is
       // (there can be multiple funding txs due to rbf, and they can be unconfirmed in any state due to zero-conf)
-      data.commitments.active.foreach { commitment =>
+      data.commitments.all.foreach { commitment =>
         commitment.localFundingStatus match {
           case _: LocalFundingStatus.SingleFundedUnconfirmedFundingTx =>
             // NB: in the case of legacy single-funded channels, the funding tx may actually be confirmed already (and

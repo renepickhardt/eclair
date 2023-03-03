@@ -17,23 +17,26 @@
 package fr.acinq.eclair.channel.states.e
 
 import akka.actor.ActorRef
-import akka.testkit.TestProbe
+import akka.actor.typed.scaladsl.adapter.actorRefAdapter
+import akka.testkit.{TestFSMRef, TestProbe}
 import fr.acinq.bitcoin.scalacompat.{ByteVector32, SatoshiLong, Transaction}
 import fr.acinq.eclair._
 import fr.acinq.eclair.blockchain.bitcoind.ZmqWatcher._
 import fr.acinq.eclair.channel.Helpers.Closing.{LocalClose, RemoteClose, RevokedClose}
 import fr.acinq.eclair.channel.LocalFundingStatus.DualFundedUnconfirmedFundingTx
 import fr.acinq.eclair.channel._
+import fr.acinq.eclair.channel.fsm.Channel
 import fr.acinq.eclair.channel.fund.InteractiveTxBuilder.FullySignedSharedTransaction
-import fr.acinq.eclair.channel.publish.TxPublisher.{PublishFinalTx, PublishReplaceableTx, PublishTx}
+import fr.acinq.eclair.channel.publish.TxPublisher.{PublishFinalTx, PublishReplaceableTx, PublishTx, SetChannelId}
+import fr.acinq.eclair.channel.states.ChannelStateTestsBase.FakeTxPublisherFactory
 import fr.acinq.eclair.channel.states.ChannelStateTestsTags.NoMaxHtlcValueInFlight
 import fr.acinq.eclair.channel.states.{ChannelStateTestsBase, ChannelStateTestsTags}
+import fr.acinq.eclair.testutils.PimpTestProbe.convert
 import fr.acinq.eclair.transactions.Transactions
 import fr.acinq.eclair.wire.protocol._
 import org.scalatest.funsuite.FixtureAnyFunSuiteLike
 import org.scalatest.time.SpanSugar.convertIntToGrainOfTime
 import org.scalatest.{Outcome, Tag}
-import fr.acinq.eclair.testutils.PimpTestProbe.convert
 
 /**
  * Created by PM on 23/12/2022.
@@ -920,6 +923,84 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     // done
     awaitCond(alice.stateName == CLOSED)
     assert(Helpers.Closing.isClosed(alice.stateData.asInstanceOf[DATA_CLOSING], None).exists(_.isInstanceOf[RevokedClose]))
+  }
+
+  test("put back watches after restart") { f =>
+    import f._
+
+    val fundingTx0 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    val (fundingTx1, fundingTx2) = setup2Splices(f)
+
+    val (aliceNodeParams, bobNodeParams) = (alice.underlyingActor.nodeParams, bob.underlyingActor.nodeParams)
+    val (alicePeer, bobPeer) = (alice.getParent, bob.getParent)
+
+    val aliceData = alice.stateData.asInstanceOf[PersistentChannelData]
+    val bobData = bob.stateData.asInstanceOf[PersistentChannelData]
+
+    alice.stop()
+    bob.stop()
+
+    alice2blockchain.expectNoMessage(100 millis)
+
+    val alice2 = TestFSMRef(new Channel(aliceNodeParams, wallet, bobNodeParams.nodeId, alice2blockchain.ref, TestProbe().ref, FakeTxPublisherFactory(alice2blockchain)), alicePeer)
+    alice2 ! INPUT_RESTORED(aliceData)
+
+    alice2blockchain.expectMsgType[SetChannelId]
+    alice2blockchain.expectWatchFundingConfirmed(fundingTx2.txid)
+    alice2blockchain.expectWatchFundingConfirmed(fundingTx1.txid)
+    alice2blockchain.expectWatchFundingSpent(fundingTx0.txid)
+    alice2blockchain.expectNoMessage(100 millis)
+  }
+
+  test("put back watches after restart (inactive)", Tag(ChannelStateTestsTags.ZeroConf), Tag(ChannelStateTestsTags.AnchorOutputsZeroFeeHtlcTxs)) { f =>
+    import f._
+
+    val fundingTx0 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx0)
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx0)
+    alice2blockchain.expectWatchFundingSpent(fundingTx0.txid)
+    bob2blockchain.expectWatchFundingSpent(fundingTx0.txid)
+
+    // create splice 1
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
+    val fundingTx1 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    alice2blockchain.expectMsgType[WatchPublished]
+    bob2blockchain.expectMsgType[WatchPublished]
+    alice ! WatchPublishedTriggered(fundingTx1)
+    bob ! WatchPublishedTriggered(fundingTx1)
+    alice2blockchain.expectWatchFundingConfirmed(fundingTx1.txid)
+    bob2blockchain.expectWatchFundingConfirmed(fundingTx1.txid)
+    alice2bob.expectMsgType[SpliceLocked]
+    alice2bob.forward(bob)
+    bob2alice.expectMsgType[SpliceLocked]
+    bob2alice.forward(alice)
+    // splice 1 has been locked, fundingTx0 is inactive
+
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat, pushAmount = 0 msat)))
+    val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    alice2blockchain.expectMsgType[WatchPublished]
+    bob2blockchain.expectMsgType[WatchPublished]
+
+    val (aliceNodeParams, bobNodeParams) = (alice.underlyingActor.nodeParams, bob.underlyingActor.nodeParams)
+    val (alicePeer, bobPeer) = (alice.getParent, bob.getParent)
+
+    val aliceData = alice.stateData.asInstanceOf[PersistentChannelData]
+    val bobData = bob.stateData.asInstanceOf[PersistentChannelData]
+
+    alice.stop()
+    bob.stop()
+
+    alice2blockchain.expectNoMessage(100 millis)
+
+    val alice2 = TestFSMRef(new Channel(aliceNodeParams, wallet, bobNodeParams.nodeId, alice2blockchain.ref, TestProbe().ref, FakeTxPublisherFactory(alice2blockchain)), alicePeer)
+    alice2 ! INPUT_RESTORED(aliceData)
+
+    alice2blockchain.expectMsgType[SetChannelId]
+    alice2blockchain.expectWatchPublished(fundingTx2.txid)
+    alice2blockchain.expectWatchFundingConfirmed(fundingTx1.txid)
+    alice2blockchain.expectWatchFundingSpent(fundingTx0.txid)
+    alice2blockchain.expectNoMessage(100 millis)
   }
 
 }
