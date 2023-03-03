@@ -58,7 +58,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     withFixture(test.toNoArgTest(setup))
   }
 
-  private def initiateSplice(f: FixtureParam, spliceIn_opt: Option[SpliceIn] = None, spliceOut_opt: Option[SpliceOut] = None): Unit = {
+  private def initiateSplice(f: FixtureParam, spliceIn_opt: Option[SpliceIn] = None, spliceOut_opt: Option[SpliceOut] = None): Transaction = {
     import f._
 
     val sender = TestProbe()
@@ -110,6 +110,9 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     awaitCond(bob.stateData.asInstanceOf[DATA_NORMAL].spliceStatus == SpliceStatus.NoSplice)
     awaitCond(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.asInstanceOf[DualFundedUnconfirmedFundingTx].sharedTx.isInstanceOf[FullySignedSharedTransaction])
     awaitCond(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.asInstanceOf[DualFundedUnconfirmedFundingTx].sharedTx.isInstanceOf[FullySignedSharedTransaction])
+
+    val fundingTx = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    fundingTx
   }
 
   test("recv CMD_SPLICE (splice-in)") { f =>
@@ -175,7 +178,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     sender.expectMsgType[RES_ADD_FAILED[_]]
     alice2bob.expectNoMessage(100 millis)
 
-    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
+    val fundingTx = initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
     alice2blockchain.expectMsgType[WatchFundingConfirmed]
     alice2blockchain.expectNoMessage(100 millis)
 
@@ -183,8 +186,8 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice ! cmd
     sender.expectMsgType[RES_ADD_FAILED[_]]
 
-    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get)
-    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get)
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx)
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx)
     alice2bob.expectMsgType[SpliceLocked]
     alice2bob.forward(bob)
 
@@ -211,15 +214,13 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
   private def setup2Splices(f: FixtureParam): (Transaction, Transaction) = {
     import f._
 
-    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
-    val fundingTx1 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    val fundingTx1 = initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
     alice2blockchain.expectWatchFundingConfirmed(fundingTx1.txid)
     alice2blockchain.expectNoMessage(100 millis)
     bob2blockchain.expectWatchFundingConfirmed(fundingTx1.txid)
     bob2blockchain.expectNoMessage(100 millis)
 
-    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
-    val fundingTx2 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
+    val fundingTx2 = initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)))
     alice2blockchain.expectWatchFundingConfirmed(fundingTx2.txid)
     alice2blockchain.expectNoMessage(100 millis)
     bob2blockchain.expectWatchFundingConfirmed(fundingTx2.txid)
@@ -233,7 +234,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     (fundingTx1, fundingTx2)
   }
 
-  test("recv WatchFundingConfirmedTriggered with two unconfirmed splice txs", Tag(NoMaxHtlcValueInFlight)) { f =>
+  test("splice local/remote locking", Tag(NoMaxHtlcValueInFlight)) { f =>
     import f._
 
     val (fundingTx1, fundingTx2) = setup2Splices(f)
@@ -263,7 +264,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
   }
 
-  test("recv WatchFundingConfirmedTriggered with two unconfirmed splice txs (reverse order)", Tag(NoMaxHtlcValueInFlight)) { f =>
+  test("splice local/remote locking (reverse order)", Tag(NoMaxHtlcValueInFlight)) { f =>
     import f._
 
     val (fundingTx1, fundingTx2) = setup2Splices(f)
@@ -291,7 +292,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
   }
 
-  test("recv WatchFundingConfirmedTriggered with two unconfirmed splice txs (intermingled)", Tag(NoMaxHtlcValueInFlight)) { f =>
+  test("splice local/remote locking (intermingled)", Tag(NoMaxHtlcValueInFlight)) { f =>
     import f._
 
     val (fundingTx1, fundingTx2) = setup2Splices(f)
@@ -323,6 +324,58 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
     assert(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.active.map(_.fundingTxIndex) == Seq(2))
     assert(bob.stateData.asInstanceOf[DATA_NORMAL].commitments.inactive.map(_.fundingTxIndex) == Seq.empty)
+  }
+
+  test("emit post-splice events", Tag(NoMaxHtlcValueInFlight)) { f =>
+    import f._
+
+    val initialState = alice.stateData.asInstanceOf[DATA_NORMAL]
+    assert(initialState.commitments.latest.capacity == 1_500_000.sat)
+    assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
+    assert(initialState.commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
+
+    val aliceEvents = TestProbe()
+    val bobEvents = TestProbe()
+    systemA.eventStream.subscribe(aliceEvents.ref, classOf[AvailableBalanceChanged])
+    systemA.eventStream.subscribe(aliceEvents.ref, classOf[LocalChannelUpdate])
+    systemA.eventStream.subscribe(aliceEvents.ref, classOf[LocalChannelDown])
+    systemB.eventStream.subscribe(bobEvents.ref, classOf[AvailableBalanceChanged])
+    systemB.eventStream.subscribe(bobEvents.ref, classOf[LocalChannelUpdate])
+    systemB.eventStream.subscribe(bobEvents.ref, classOf[LocalChannelDown])
+
+    val (fundingTx1, fundingTx2) = setup2Splices(f)
+
+    // splices haven't been locked, so no event is emitted
+    aliceEvents.expectNoMessage(100 millis)
+    bobEvents.expectNoMessage(100 millis)
+
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    alice2bob.expectMsgType[SpliceLocked]
+    alice2bob.forward(bob)
+    aliceEvents.expectNoMessage(100 millis)
+    bobEvents.expectNoMessage(100 millis)
+
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx1)
+    bob2alice.expectMsgType[SpliceLocked]
+    bob2alice.forward(alice)
+    aliceEvents.expectAvailableBalanceChanged(balance = 1_300_000_000.msat, capacity = 2_000_000.sat)
+    bobEvents.expectAvailableBalanceChanged(balance = 700_000_000.msat, capacity = 2_000_000.sat)
+    aliceEvents.expectNoMessage(100 millis)
+    bobEvents.expectNoMessage(100 millis)
+
+    bob ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    bob2alice.expectMsgType[SpliceLocked]
+    bob2alice.forward(alice)
+    aliceEvents.expectNoMessage(100 millis)
+    bobEvents.expectNoMessage(100 millis)
+
+    alice ! WatchFundingConfirmedTriggered(BlockHeight(400000), 42, fundingTx2)
+    alice2bob.expectMsgType[SpliceLocked]
+    alice2bob.forward(bob)
+    aliceEvents.expectAvailableBalanceChanged(balance = 1_800_000_000.msat, capacity = 2_500_000.sat)
+    bobEvents.expectAvailableBalanceChanged(balance = 700_000_000.msat, capacity = 2_500_000.sat)
+    aliceEvents.expectNoMessage(100 millis)
+    bobEvents.expectNoMessage(100 millis)
   }
 
   test("recv CMD_ADD_HTLC with multiple commitments") { f =>
