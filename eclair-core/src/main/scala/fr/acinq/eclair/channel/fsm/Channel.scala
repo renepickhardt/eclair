@@ -934,6 +934,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       d.commitments.updateLocalFundingStatus(w.tx.txid, fundingStatus) match {
         case Right((commitments1, _)) =>
           watchFundingConfirmed(w.tx.txid, Some(nodeParams.channelConf.minDepthBlocks))
+          maybeEmitEventsPostSplice(d.shortIds, d.commitments, commitments1)
           stay() using d.copy(commitments = commitments1) storing() sending SpliceLocked(d.channelId, w.tx.txid)
         case Left(_) => stay()
       }
@@ -948,13 +949,16 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
             // this was a zero-conf splice and we already sent our splice_locked
             None
           }
+          maybeEmitEventsPostSplice(d.shortIds, d.commitments, commitments1)
           stay() using d.copy(commitments = commitments1) storing() sending toSend.toSeq
         case Left(_) => stay()
       }
 
     case Event(msg: SpliceLocked, d: DATA_NORMAL) =>
       d.commitments.updateRemoteFundingStatus(msg.fundingTxid) match {
-        case Right((commitments1, _)) => stay() using d.copy(commitments = commitments1) storing()
+        case Right((commitments1, _)) =>
+          maybeEmitEventsPostSplice(d.shortIds, d.commitments, commitments1)
+          stay() using d.copy(commitments = commitments1) storing()
         case Left(_) => stay()
       }
 
@@ -2261,6 +2265,19 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
   private def maybeEmitChannelUpdateChangedEvent(newUpdate: ChannelUpdate, oldUpdate_opt: Option[ChannelUpdate], d: DATA_NORMAL): Unit = {
     if (oldUpdate_opt.isEmpty || !Announcements.areSameIgnoreFlags(newUpdate, oldUpdate_opt.get)) {
       context.system.eventStream.publish(ChannelUpdateParametersChanged(self, d.channelId, d.commitments.remoteNodeId, newUpdate))
+    }
+  }
+
+  /** Splices change balances and capacity, we send events to notify other actors (router, relayer) */
+  private def maybeEmitEventsPostSplice(shortIds: ShortIds, oldCommitments: Commitments, newCommitments: Commitments): Unit = {
+    // NB: we consider the send and receive balance, because router tracks both
+    if (oldCommitments.availableBalanceForSend != newCommitments.availableBalanceForSend || oldCommitments.availableBalanceForReceive != newCommitments.availableBalanceForReceive) {
+      context.system.eventStream.publish(AvailableBalanceChanged(self, newCommitments.channelId, shortIds, newCommitments))
+    }
+    if (!Helpers.aboveReserve(oldCommitments) && Helpers.aboveReserve(newCommitments)) {
+      // we just went above reserve (can't go below), let's refresh our channel_update to enable/disable it accordingly
+      log.debug("updating channel_update aboveReserve={}", Helpers.aboveReserve(newCommitments))
+      self ! BroadcastChannelUpdate(AboveReserve)
     }
   }
 
