@@ -207,7 +207,7 @@ final case class CMD_FORCECLOSE(replyTo: ActorRef) extends CloseCommand
 final case class CMD_BUMP_FUNDING_FEE(replyTo: akka.actor.typed.ActorRef[CommandResponse[CMD_BUMP_FUNDING_FEE]], targetFeerate: FeeratePerKw, lockTime: Long) extends Command
 case class SpliceIn(additionalLocalFunding: Satoshi, pushAmount: MilliSatoshi = 0.msat)
 case class SpliceOut(amount: Satoshi, scriptPubKey: ByteVector)
-final case class CMD_SPLICE(replyTo: ActorRef, spliceIn_opt: Option[SpliceIn], spliceOut_opt: Option[SpliceOut]) extends HasReplyToCommand {
+final case class CMD_SPLICE(replyTo: akka.actor.typed.ActorRef[CommandResponse[CMD_SPLICE]], spliceIn_opt: Option[SpliceIn], spliceOut_opt: Option[SpliceOut]) extends Command {
   require(spliceIn_opt.isDefined || spliceOut_opt.isDefined, "there must be a splice-in or a splice-out")
   val additionalLocalFunding: Satoshi = spliceIn_opt.map(_.additionalLocalFunding).getOrElse(0L.sat)
   val pushAmount: MilliSatoshi = spliceIn_opt.map(_.pushAmount).getOrElse(0L.msat)
@@ -260,6 +260,7 @@ final case class RES_ADD_SETTLED[+O <: Origin, +R <: HtlcResult](origin: O, htlc
 
 /** other specific responses */
 final case class RES_BUMP_FUNDING_FEE(rbfIndex: Int, fundingTxId: ByteVector32, fee: Satoshi) extends CommandSuccess[CMD_BUMP_FUNDING_FEE]
+final case class RES_SPLICE(fundingTxIndex: Long, fundingTxId: ByteVector32, capacity: Satoshi, balance: MilliSatoshi) extends CommandSuccess[CMD_SPLICE]
 final case class RES_GET_CHANNEL_STATE(state: ChannelState) extends CommandSuccess[CMD_GET_CHANNEL_STATE]
 final case class RES_GET_CHANNEL_DATA[+D <: ChannelData](data: D) extends CommandSuccess[CMD_GET_CHANNEL_DATA]
 final case class RES_GET_CHANNEL_INFO(nodeId: PublicKey, channelId: ByteVector32, state: ChannelState, data: ChannelData) extends CommandSuccess[CMD_GET_CHANNEL_INFO]
@@ -449,7 +450,7 @@ sealed trait SpliceStatus
 object SpliceStatus {
   case object NoSplice extends SpliceStatus
   case class SpliceRequested(cmd: CMD_SPLICE, init: SpliceInit) extends SpliceStatus
-  case class SpliceInProgress(splice: typed.ActorRef[InteractiveTxBuilder.Command]) extends SpliceStatus
+  case class SpliceInProgress(cmd_opt: Option[CMD_SPLICE], splice: typed.ActorRef[InteractiveTxBuilder.Command]) extends SpliceStatus
   case object SpliceAborted extends SpliceStatus
 }
 

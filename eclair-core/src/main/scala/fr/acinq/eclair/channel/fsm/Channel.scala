@@ -18,7 +18,7 @@ package fr.acinq.eclair.channel.fsm
 
 import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.scaladsl.adapter.{ClassicActorContextOps, actorRefAdapter}
-import akka.actor.{Actor, ActorContext, ActorRef, FSM, OneForOneStrategy, PossiblyHarmful, Props, Status, SupervisorStrategy, typed}
+import akka.actor.{Actor, ActorContext, ActorRef, FSM, OneForOneStrategy, PossiblyHarmful, Props, SupervisorStrategy, typed}
 import akka.event.Logging.MDC
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey}
 import fr.acinq.bitcoin.scalacompat.{Block, ByteVector32, Satoshi, SatoshiLong, Transaction, TxOut}
@@ -504,7 +504,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       aggregateSigs(commit) match {
         case Some(sigs) =>
           d.spliceStatus match {
-            case SpliceStatus.SpliceInProgress(txBuilder) =>
+            case SpliceStatus.SpliceInProgress(_, txBuilder) =>
               txBuilder ! InteractiveTxBuilder.ReceiveCommitSig(commit)
               stay()
             case _ =>
@@ -742,7 +742,6 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       }
 
     case Event(cmd: CMD_SPLICE, d: DATA_NORMAL) =>
-      val replyTo = if (cmd.replyTo == ActorRef.noSender) sender() else cmd.replyTo
       d.spliceStatus match {
         case SpliceStatus.NoSplice =>
           if (d.commitments.isIdle && d.commitments.params.channelFeatures.hasFeature(DualFunding)) {
@@ -755,7 +754,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
               targetFeerate = targetFeerate)
             if (fundingAmount < 0.sat) {
               log.warning("cannot do splice: insufficient funds")
-              replyTo ! Status.Failure(InvalidSpliceRequest(d.channelId))
+              cmd.replyTo ! RES_FAILURE(cmd, InvalidSpliceRequest(d.channelId))
               stay()
             } else {
               log.info(s"initiating splice with local.in.amount=${cmd.additionalLocalFunding} local.in.push=${cmd.pushAmount} out.amount=${cmd.spliceOut_opt.map(_.amount).sum}")
@@ -766,16 +765,16 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
                 pushAmount = cmd.pushAmount,
                 requireConfirmedInputs = nodeParams.channelConf.requireConfirmedInputsForDualFunding
               )
-              stay() using d.copy(spliceStatus = SpliceStatus.SpliceRequested(cmd.copy(replyTo = replyTo), spliceInit)) sending spliceInit
+              stay() using d.copy(spliceStatus = SpliceStatus.SpliceRequested(cmd, spliceInit)) sending spliceInit
             }
           } else {
             log.warning("cannot do splice")
-            replyTo ! Status.Failure(CommandUnavailableInThisState(d.channelId, "splice", NORMAL))
+            cmd.replyTo ! RES_FAILURE(cmd, CommandUnavailableInThisState(d.channelId, "splice", NORMAL))
             stay()
           }
         case _ =>
           log.warning("cannot initiate splice, another one is already in progress")
-          replyTo ! Status.Failure(InvalidSpliceAlreadyInProgress(d.channelId))
+          cmd.replyTo ! RES_FAILURE(cmd, InvalidSpliceAlreadyInProgress(d.channelId))
           stay()
       }
 
@@ -813,7 +812,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
               wallet
             ))
             txBuilder ! InteractiveTxBuilder.Start(self)
-            stay() using d.copy(spliceStatus = SpliceStatus.SpliceInProgress(txBuilder)) sending spliceAck
+            stay() using d.copy(spliceStatus = SpliceStatus.SpliceInProgress(cmd_opt = None, splice = txBuilder)) sending spliceAck
           } else {
             log.info("rejecting splice request, channel not idle or not compatible")
             stay() using d.copy(spliceStatus = SpliceStatus.SpliceAborted) sending TxAbort(d.channelId, InvalidSpliceRequest(d.channelId).getMessage)
@@ -830,7 +829,6 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       d.spliceStatus match {
         case SpliceStatus.SpliceRequested(cmd, spliceInit) =>
           log.info("our peer accepted our splice request and will contribute {} to the funding transaction", msg.fundingAmount)
-          cmd.replyTo ! RES_SUCCESS(cmd, d.channelId)
           val parentCommitments = d.commitments.latest
           val fundingParams = InteractiveTxParams(
             channelId = d.channelId,
@@ -854,36 +852,46 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
             wallet
           ))
           txBuilder ! InteractiveTxBuilder.Start(self)
-          stay() using d.copy(spliceStatus = SpliceStatus.SpliceInProgress(txBuilder))
+          stay() using d.copy(spliceStatus = SpliceStatus.SpliceInProgress(cmd_opt = Some(cmd), splice = txBuilder))
         case _ =>
           log.info(s"ignoring unexpected splice_ack=$msg")
           stay()
       }
 
-    case Event(msg: InteractiveTxBuilder.Response, d: DATA_NORMAL) => msg match {
-      case InteractiveTxBuilder.SendMessage(msg) => stay() sending msg
-      case InteractiveTxBuilder.Succeeded(dfu, commitment) =>
-        log.info(s"splice completed: new funding index=${commitment.fundingTxIndex} txid=${dfu.sharedTx.txId}")
-        watchFundingConfirmed(commitment.fundingTxId, dfu.fundingParams.minDepth_opt)
-        val d1 = d.copy(commitments = d.commitments.add(commitment), spliceStatus = SpliceStatus.NoSplice)
-        dfu.sharedTx match {
-          case fundingTx: PartiallySignedSharedTransaction => stay() using d1 storing() sending fundingTx.localSigs
-          case fundingTx: FullySignedSharedTransaction => stay() using d1 storing() sending fundingTx.localSigs calling publishFundingTx(dfu)
-        }
-      case f: InteractiveTxBuilder.Failed =>
-        log.info("splice attempt failed: {}", f.cause.getMessage)
-        stay() using d.copy(spliceStatus = SpliceStatus.SpliceAborted) sending TxAbort(d.channelId, f.cause.getMessage)
-    }
+    case Event(msg: InteractiveTxBuilder.Response, d: DATA_NORMAL) =>
+      d.spliceStatus match {
+        case SpliceStatus.SpliceInProgress(cmd_opt, _) =>
+          msg match {
+            case InteractiveTxBuilder.SendMessage(msg) => stay() sending msg
+            case InteractiveTxBuilder.Succeeded(dfu, commitment) =>
+              log.info(s"splice completed: new funding index=${commitment.fundingTxIndex} txid=${dfu.sharedTx.txId}")
+              cmd_opt.foreach(cmd => cmd.replyTo ! RES_SPLICE(fundingTxIndex = commitment.fundingTxIndex, commitment.fundingTxId, commitment.capacity, commitment.localCommit.spec.toLocal))
+              watchFundingConfirmed(commitment.fundingTxId, dfu.fundingParams.minDepth_opt)
+              val d1 = d.copy(commitments = d.commitments.add(commitment), spliceStatus = SpliceStatus.NoSplice)
+              dfu.sharedTx match {
+                case fundingTx: PartiallySignedSharedTransaction => stay() using d1 storing() sending fundingTx.localSigs
+                case fundingTx: FullySignedSharedTransaction => stay() using d1 storing() sending fundingTx.localSigs calling publishFundingTx(dfu)
+              }
+            case f: InteractiveTxBuilder.Failed =>
+              log.info("splice attempt failed: {}", f.cause.getMessage)
+              cmd_opt.foreach(cmd => cmd.replyTo ! RES_FAILURE(cmd, f.cause))
+              stay() using d.copy(spliceStatus = SpliceStatus.SpliceAborted) sending TxAbort(d.channelId, f.cause.getMessage)
+          }
+        case msg =>
+          log.warning("ignoring unexpected local interactive-tx message: {}", msg)
+          stay()
+      }
 
     case Event(msg: TxAbort, d: DATA_NORMAL) =>
       d.spliceStatus match {
-        case SpliceStatus.SpliceInProgress(txBuilder) =>
+        case SpliceStatus.SpliceInProgress(cmd_opt, txBuilder) =>
           log.info("our peer aborted the splice attempt: ascii='{}' bin={}", msg.toAscii, msg.data)
+          cmd_opt.foreach(cmd => cmd.replyTo ! RES_FAILURE(cmd, SpliceAttemptAborted(d.channelId)))
           txBuilder ! InteractiveTxBuilder.Abort
           stay() using d.copy(spliceStatus = SpliceStatus.NoSplice) sending TxAbort(d.channelId, SpliceAttemptAborted(d.channelId).getMessage)
         case SpliceStatus.SpliceRequested(cmd, _) =>
           log.info("our peer rejected our splice attempt: ascii='{}' bin={}", msg.toAscii, msg.data)
-          cmd.replyTo ! Status.Failure(new RuntimeException(s"splice attempt rejected by our peer: ${msg.toAscii}"))
+          cmd.replyTo ! RES_FAILURE(cmd, new RuntimeException(s"splice attempt rejected by our peer: ${msg.toAscii}"))
           stay() using d.copy(spliceStatus = SpliceStatus.NoSplice) sending TxAbort(d.channelId, SpliceAttemptAborted(d.channelId).getMessage)
         case SpliceStatus.SpliceAborted =>
           log.debug("our peer acked our previous tx_abort")
@@ -896,10 +904,10 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
 
     case Event(msg: InteractiveTxMessage, d: DATA_NORMAL) =>
       (d.spliceStatus, msg) match {
-        case (SpliceStatus.SpliceInProgress(txBuilder), msg: InteractiveTxConstructionMessage) =>
+        case (SpliceStatus.SpliceInProgress(_, txBuilder), msg: InteractiveTxConstructionMessage) =>
           txBuilder ! InteractiveTxBuilder.ReceiveTxMessage(msg)
           stay()
-        case (SpliceStatus.SpliceInProgress(txBuilder), msg: TxSignatures) =>
+        case (SpliceStatus.SpliceInProgress(_, txBuilder), msg: TxSignatures) =>
           txBuilder ! InteractiveTxBuilder.ReceiveTxSigs(msg)
           stay()
         case (SpliceStatus.NoSplice, msg: TxSignatures) =>
@@ -974,8 +982,10 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       cancelTimer(Reconnected.toString)
       // if we are splicing, we need to cancel it
       d.spliceStatus match {
-        case SpliceStatus.SpliceInProgress(txBuilder) => txBuilder ! InteractiveTxBuilder.Abort
-        case SpliceStatus.SpliceRequested(cmd, _) => cmd.replyTo ! Status.Failure(new RuntimeException("splice attempt failed: disconnected"))
+        case SpliceStatus.SpliceInProgress(cmd_opt, txBuilder) =>
+          cmd_opt.foreach(cmd => cmd.replyTo ! RES_FAILURE(cmd, new RuntimeException("splice attempt failed: disconnected")))
+          txBuilder ! InteractiveTxBuilder.Abort
+        case SpliceStatus.SpliceRequested(cmd, _) => cmd.replyTo ! RES_FAILURE(cmd, new RuntimeException("splice attempt failed: disconnected"))
         case SpliceStatus.SpliceAborted => // nothing to do
         case SpliceStatus.NoSplice => // nothing to do
       }
@@ -1851,6 +1861,10 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
 
     case Event(c: CMD_BUMP_FUNDING_FEE, d) =>
       c.replyTo ! RES_FAILURE(c, CommandUnavailableInThisState(d.channelId, "rbf", stateName))
+      stay()
+
+    case Event(c: CMD_SPLICE, d) =>
+      c.replyTo ! RES_FAILURE(c, CommandUnavailableInThisState(d.channelId, "splice", stateName))
       stay()
 
     // at restore, if the configuration has changed, the channel will send a command to itself to update the relay fees

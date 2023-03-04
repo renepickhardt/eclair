@@ -211,23 +211,24 @@ class EclairImpl(appKit: Kit) extends Eclair with Logging {
   }
 
   override def rbfOpen(channelId: ByteVector32, targetFeerate: FeeratePerKw, lockTime_opt: Option[Long])(implicit timeout: Timeout): Future[CommandResponse[CMD_BUMP_FUNDING_FEE]] = {
-    sendToChannelTyped(Left(channelId), CMD_BUMP_FUNDING_FEE(_, targetFeerate, lockTime_opt.getOrElse(appKit.nodeParams.currentBlockHeight.toLong)))
+    sendToChannelTyped(channel = Left(channelId),
+      cmdBuilder = CMD_BUMP_FUNDING_FEE(_, targetFeerate, lockTime_opt.getOrElse(appKit.nodeParams.currentBlockHeight.toLong)))
   }
 
   override def spliceIn(channelId: ByteVector32, amountIn: Satoshi, pushAmount_opt: Option[MilliSatoshi])(implicit timeout: Timeout): Future[CommandResponse[CMD_SPLICE]] = {
-    val cmd = CMD_SPLICE(ActorRef.noSender,
-      spliceIn_opt = Some(SpliceIn(additionalLocalFunding = amountIn, pushAmount = pushAmount_opt.getOrElse(0.msat))),
-      spliceOut_opt = None
-    )
-    sendToChannel(Left(channelId), cmd)
+    sendToChannelTyped(channel = Left(channelId),
+      cmdBuilder = CMD_SPLICE(_,
+        spliceIn_opt = Some(SpliceIn(additionalLocalFunding = amountIn, pushAmount = pushAmount_opt.getOrElse(0.msat))),
+        spliceOut_opt = None
+      ))
   }
 
   override def spliceOut(channelId: ByteVector32, amountOut: Satoshi, scriptPubKey: ByteVector)(implicit timeout: Timeout): Future[CommandResponse[CMD_SPLICE]] = {
-    val cmd = CMD_SPLICE(ActorRef.noSender,
-      spliceIn_opt = None,
-      spliceOut_opt = Some(SpliceOut(amount = amountOut, scriptPubKey = scriptPubKey))
-    )
-    sendToChannel(Left(channelId), cmd)
+    sendToChannelTyped(channel = Left(channelId),
+      cmdBuilder = CMD_SPLICE(_,
+        spliceIn_opt = None,
+        spliceOut_opt = Some(SpliceOut(amount = amountOut, scriptPubKey = scriptPubKey))
+      ))
   }
 
   override def close(channels: List[ApiTypes.ChannelIdentifier], scriptPubKey_opt: Option[ByteVector], closingFeerates_opt: Option[ClosingFeerates])(implicit timeout: Timeout): Future[Map[ApiTypes.ChannelIdentifier, Either[Throwable, CommandResponse[CMD_CLOSE]]]] = {

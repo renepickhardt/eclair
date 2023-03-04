@@ -69,7 +69,6 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice2bob.forward(bob)
     bob2alice.expectMsgType[SpliceAck]
     bob2alice.forward(alice)
-    sender.expectMsgType[RES_SUCCESS[CMD_SPLICE]]
 
     alice2bob.expectMsgType[TxAddInput]
     alice2bob.forward(bob)
@@ -106,6 +105,8 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     bob2alice.forward(alice)
     alice2bob.expectMsgType[TxSignatures]
     alice2bob.forward(bob)
+
+    sender.expectMsgType[RES_SPLICE]
 
     awaitCond(alice.stateData.asInstanceOf[DATA_NORMAL].spliceStatus == SpliceStatus.NoSplice)
     awaitCond(bob.stateData.asInstanceOf[DATA_NORMAL].spliceStatus == SpliceStatus.NoSplice)
@@ -167,7 +168,6 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice2bob.forward(bob)
     bob2alice.expectMsgType[SpliceAck]
     bob2alice.forward(alice)
-    sender.expectMsgType[RES_SUCCESS[CMD_SPLICE]]
     alice2bob.expectMsgType[TxAddInput]
     alice2bob.forward(bob)
     bob2alice.expectMsgType[TxComplete]
@@ -184,6 +184,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice2bob.forward(bob)
     bob2alice.expectMsgType[TxAbort]
     bob2alice.forward(alice)
+    sender.expectMsgType[RES_FAILURE[_, _]]
   }
 
   test("recv CMD_SPLICE (splice-in + splice-out)") { f =>
@@ -460,7 +461,6 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice2bob.forward(bob)
     bob2alice.expectMsgType[SpliceAck]
     bob2alice.forward(alice)
-    sender.expectMsgType[RES_SUCCESS[CMD_SPLICE]]
     alice2bob.expectMsgType[TxAddInput]
     alice ! CMD_ADD_HTLC(sender.ref, 500000 msat, randomBytes32(), CltvExpiryDelta(144).toCltvExpiry(currentBlockHeight), TestConstants.emptyOnionPacket, None, localOrigin(sender.ref))
     sender.expectMsgType[RES_ADD_FAILED[_]]
@@ -501,7 +501,6 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice2bob.forward(bob)
     bob2alice.expectMsgType[SpliceAck]
     bob2alice.forward(alice)
-    sender.expectMsgType[RES_SUCCESS[CMD_SPLICE]]
     alice2bob.expectMsgType[TxAddInput]
 
     // have to build a htlc manually because eclair would refuse to accept this command as it's forbidden
@@ -525,9 +524,9 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     alice2bob.forward(bob)
     bob2alice.expectMsgType[SpliceAck]
     bob2alice.forward(alice)
-    sender.expectMsgType[RES_SUCCESS[CMD_SPLICE]]
 
     alice ! INPUT_DISCONNECTED
+    sender.expectMsgType[RES_FAILURE[_, _]]
     awaitCond(alice.stateName == OFFLINE)
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].spliceStatus == SpliceStatus.NoSplice)
   }
