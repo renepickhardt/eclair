@@ -37,7 +37,7 @@ import fr.acinq.eclair.wire.protocol._
 import org.scalatest.funsuite.FixtureAnyFunSuiteLike
 import org.scalatest.time.SpanSugar.convertIntToGrainOfTime
 import org.scalatest.{Outcome, Tag}
-import scodec.bits.ByteVector
+import scodec.bits.{ByteVector, HexStringSyntax}
 
 /**
  * Created by PM on 23/12/2022.
@@ -58,6 +58,8 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     awaitCond(bob.stateName == NORMAL)
     withFixture(test.toNoArgTest(setup))
   }
+
+  private val defaultSpliceOutScriptPubKey = hex"0020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
   private def initiateSplice(f: FixtureParam, spliceIn_opt: Option[SpliceIn] = None, spliceOut_opt: Option[SpliceOut] = None): Transaction = {
     import f._
@@ -140,7 +142,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
     assert(initialState.commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
 
-    initiateSplice(f, spliceOut_opt = Some(SpliceOut(100_000 sat, ByteVector32.Zeroes)))
+    initiateSplice(f, spliceOut_opt = Some(SpliceOut(100_000 sat, defaultSpliceOutScriptPubKey)))
 
     val fundingTx1 = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.localFundingStatus.signedTx_opt.get
     val feerate = TestConstants.Alice.nodeParams.onChainFeeConf.feeEstimator.getFeeratePerKw(TestConstants.Alice.nodeParams.onChainFeeConf.feeTargets.fundingBlockTarget)
@@ -162,7 +164,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(initialState.commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
 
     val sender = TestProbe()
-    val cmd = CMD_SPLICE(sender.ref, spliceIn_opt = None, Some(SpliceOut(790_000 sat, ByteVector32.Zeroes)))
+    val cmd = CMD_SPLICE(sender.ref, spliceIn_opt = None, Some(SpliceOut(790_000 sat, defaultSpliceOutScriptPubKey)))
     alice ! cmd
     alice2bob.expectMsgType[SpliceInit]
     alice2bob.forward(bob)
@@ -195,7 +197,7 @@ class NormalSplicesStateSpec extends TestKitBaseClass with FixtureAnyFunSuiteLik
     assert(initialState.commitments.latest.localCommit.spec.toLocal == 800_000_000.msat)
     assert(initialState.commitments.latest.localCommit.spec.toRemote == 700_000_000.msat)
 
-    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)), spliceOut_opt = Some(SpliceOut(100_000 sat, ByteVector32.Zeroes)))
+    initiateSplice(f, spliceIn_opt = Some(SpliceIn(500_000 sat)), spliceOut_opt = Some(SpliceOut(100_000 sat, defaultSpliceOutScriptPubKey)))
 
     // NB: since there is a splice-in, swap-out fees will be paid from bitcoind so final capacity is predictable
     assert(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.latest.capacity == 1_900_000.sat)

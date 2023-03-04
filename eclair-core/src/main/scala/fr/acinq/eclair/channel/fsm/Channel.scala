@@ -31,6 +31,7 @@ import fr.acinq.eclair.blockchain.bitcoind.ZmqWatcher
 import fr.acinq.eclair.blockchain.bitcoind.ZmqWatcher._
 import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient
 import fr.acinq.eclair.channel.Commitments.PostRevocationAction
+import fr.acinq.eclair.channel.Helpers.Closing.MutualClose
 import fr.acinq.eclair.channel.Helpers.Syncing.SyncResult
 import fr.acinq.eclair.channel.Helpers._
 import fr.acinq.eclair.channel.Monitoring.Metrics.ProcessMessage
@@ -754,6 +755,10 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
               targetFeerate = targetFeerate)
             if (fundingAmount < 0.sat) {
               log.warning("cannot do splice: insufficient funds")
+              cmd.replyTo ! RES_FAILURE(cmd, InvalidSpliceRequest(d.channelId))
+              stay()
+            } else if (cmd.spliceOut_opt.map(_.scriptPubKey).exists(!MutualClose.isValidFinalScriptPubkey(_, allowAnySegwit = true))) {
+              log.warning("cannot do splice: invalid splice-out script")
               cmd.replyTo ! RES_FAILURE(cmd, InvalidSpliceRequest(d.channelId))
               stay()
             } else {

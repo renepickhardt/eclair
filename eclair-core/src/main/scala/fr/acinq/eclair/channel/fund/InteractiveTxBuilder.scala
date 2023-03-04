@@ -24,7 +24,8 @@ import fr.acinq.bitcoin.scalacompat.{ByteVector32, ByteVector64, Lexicographical
 import fr.acinq.eclair.blockchain.OnChainChannelFunder
 import fr.acinq.eclair.blockchain.OnChainWallet.SignTransactionResponse
 import fr.acinq.eclair.blockchain.fee.FeeratePerKw
-import fr.acinq.eclair.channel.Helpers.Funding
+import fr.acinq.eclair.channel.Helpers.Closing.MutualClose
+import fr.acinq.eclair.channel.Helpers.{Closing, Funding}
 import fr.acinq.eclair.channel.LocalFundingStatus.DualFundedUnconfirmedFundingTx
 import fr.acinq.eclair.channel._
 import fr.acinq.eclair.channel.fund.InteractiveTxBuilder.Purpose
@@ -548,6 +549,8 @@ private class InteractiveTxBuilder(replyTo: ActorRef[InteractiveTxBuilder.Respon
       Left(OutputBelowDust(fundingParams.channelId, addOutput.serialId, addOutput.amount, fundingParams.dustLimit))
     } else if (addOutput.pubkeyScript == fundingParams.fundingPubkeyScript && addOutput.amount != fundingParams.fundingAmount) {
       Left(InvalidSharedOutputAmount(fundingParams.channelId, addOutput.serialId, addOutput.amount, fundingParams.fundingAmount))
+    } else if (!MutualClose.isValidFinalScriptPubkey(addOutput.pubkeyScript, allowAnySegwit = true)) {
+      Left(InvalidSpliceOutputScript(fundingParams.channelId, addOutput.serialId, addOutput.pubkeyScript))
     } else if (addOutput.pubkeyScript == fundingParams.fundingPubkeyScript) {
       Right(Output.Shared(addOutput.serialId, addOutput.pubkeyScript, fundingParams.localAmount, fundingParams.remoteAmount))
     } else {

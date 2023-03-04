@@ -22,6 +22,7 @@ import fr.acinq.eclair.blockchain.fee.FeeratePerKw
 import fr.acinq.eclair.wire.protocol
 import fr.acinq.eclair.wire.protocol.{AnnouncementSignatures, InteractiveTxMessage, UpdateAddHtlc}
 import fr.acinq.eclair.{BlockHeight, CltvExpiry, CltvExpiryDelta, MilliSatoshi, UInt64}
+import scodec.bits.ByteVector
 
 /**
  * Created by PM on 11/04/2017.
@@ -62,6 +63,7 @@ case class PreviousTxMissing                       (override val channelId: Byte
 case class InvalidSharedInput                      (override val channelId: ByteVector32, serialId: UInt64) extends ChannelException(channelId, s"invalid shared tx_add_input (serial_id=${serialId.toByteVector.toHex})")
 case class OutputBelowDust                         (override val channelId: ByteVector32, serialId: UInt64, amount: Satoshi, dustLimit: Satoshi) extends ChannelException(channelId, s"invalid output amount=$amount below dust=$dustLimit (serial_id=${serialId.toByteVector.toHex})")
 case class InvalidSharedOutputAmount               (override val channelId: ByteVector32, serialId: UInt64, amount: Satoshi, expected: Satoshi) extends ChannelException(channelId, s"invalid shared output amount=$amount expected=$expected (serial_id=${serialId.toByteVector.toHex})")
+case class InvalidSpliceOutputScript               (override val channelId: ByteVector32, serialId: UInt64, publicKeyScript: ByteVector) extends ChannelException(channelId, s"invalid splice output publicKeyScript=$publicKeyScript (serial_id=${serialId.toByteVector.toHex})")
 case class UnconfirmedInteractiveTxInputs          (override val channelId: ByteVector32) extends ChannelException(channelId, "the completed interactive tx contains unconfirmed inputs")
 case class InvalidCompleteInteractiveTx            (override val channelId: ByteVector32) extends ChannelException(channelId, "the completed interactive tx is invalid")
 case class TooManyInteractiveTxRounds              (override val channelId: ByteVector32) extends ChannelException(channelId, "too many messages exchanged during interactive tx construction")
