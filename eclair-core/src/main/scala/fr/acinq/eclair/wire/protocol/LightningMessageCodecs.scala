@@ -417,7 +417,8 @@ object LightningMessageCodecs {
 
   val spliceLockedCodec: Codec[SpliceLocked] = (
     ("channelId" | bytes32) ::
-      ("fundingTxid" | bytes32)).as[SpliceLocked]
+      ("fundingTxid" | bytes32) ::
+      ("tlvStream" | SpliceLockedTlv.spliceLockedTlvCodec)).as[SpliceLocked]
   //
 
   //

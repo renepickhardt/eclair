@@ -313,7 +313,8 @@ object SpliceAck {
 }
 
 case class SpliceLocked(channelId: ByteVector32,
-                        fundingTxid: ByteVector32) extends ChannelMessage with HasChannelId
+                        fundingTxid: ByteVector32,
+                        tlvStream: TlvStream[SpliceLockedTlv] = TlvStream.empty) extends ChannelMessage with HasChannelId
 
 case class Shutdown(channelId: ByteVector32,
                     scriptPubKey: ByteVector,

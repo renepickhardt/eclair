@@ -21,7 +21,7 @@ import akka.actor.typed.scaladsl.adapter.{ClassicActorContextOps, actorRefAdapte
 import akka.actor.{Actor, ActorContext, ActorRef, FSM, OneForOneStrategy, PossiblyHarmful, Props, SupervisorStrategy, typed}
 import akka.event.Logging.MDC
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey}
-import fr.acinq.bitcoin.scalacompat.{Block, ByteVector32, Satoshi, SatoshiLong, Transaction, TxOut}
+import fr.acinq.bitcoin.scalacompat.{Block, ByteVector32, Satoshi, SatoshiLong, Transaction}
 import fr.acinq.eclair.Features.DualFunding
 import fr.acinq.eclair.Logs.LogCategory
 import fr.acinq.eclair._
@@ -751,7 +751,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
               isInitiator = true,
               commitment = d.commitments.active.head,
               spliceInAmount = cmd.additionalLocalFunding,
-              spliceOut = cmd.spliceOut_opt.toList.map(s => TxOut(s.amount, s.scriptPubKey)),
+              spliceOut = cmd.spliceOutputs,
               targetFeerate = targetFeerate)
             if (fundingAmount < 0.sat) {
               log.warning("cannot do splice: insufficient funds")
@@ -784,17 +784,17 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       }
 
     // NB: we only accept splices on regtest
-    case Event(msg: SpliceInit, d: DATA_NORMAL) if nodeParams.chainHash == Block.RegtestGenesisBlock.hash =>
+    case Event(msg: SpliceInit, d: DATA_NORMAL) if nodeParams.chainHash == Block.RegtestGenesisBlock.hash || nodeParams.chainHash == Block.TestnetGenesisBlock.hash =>
       d.spliceStatus match {
         case SpliceStatus.NoSplice =>
           if (d.commitments.isIdle && d.commitments.params.channelFeatures.hasFeature(DualFunding)) {
             log.info(s"accepting splice with remote.in.amount=${msg.fundingAmount} remote.in.push=${msg.pushAmount}")
+            val parentCommitments = d.commitments.latest
             val spliceAck = SpliceAck(d.channelId,
-              fundingAmount = d.commitments.latest.localCommit.spec.toLocal.truncateToSatoshi,
-              pushAmount = 0.msat, // only remote contributes to the splice
+              fundingAmount = parentCommitments.localCommit.spec.toLocal.truncateToSatoshi, // only remote contributes to the splice
+              pushAmount = 0.msat,
               requireConfirmedInputs = nodeParams.channelConf.requireConfirmedInputsForDualFunding
             )
-            val parentCommitments = d.commitments.latest
             val fundingParams = InteractiveTxParams(
               channelId = d.channelId,
               isInitiator = false,
@@ -804,7 +804,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
               fundingPubkeyScript = parentCommitments.commitment.commitInput.txOut.publicKeyScript, // same pubkey script as before
               localOutputs = Nil,
               lockTime = nodeParams.currentBlockHeight.toLong,
-              dustLimit = parentCommitments.localParams.dustLimit.max(d.commitments.params.remoteParams.dustLimit),
+              dustLimit = d.commitments.params.localParams.dustLimit.max(d.commitments.params.remoteParams.dustLimit),
               targetFeerate = msg.feerate,
               minDepth_opt = Funding.minDepthDualFunding(nodeParams.channelConf, d.commitments.params.localParams.initFeatures, isInitiator = false, localAmount = spliceAck.fundingAmount, remoteAmount = msg.fundingAmount),
               requireConfirmedInputs = RequireConfirmedInputs(forLocal = msg.requireConfirmedInputs, forRemote = spliceAck.requireConfirmedInputs)
@@ -842,7 +842,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
             remoteAmount = msg.fundingAmount,
             sharedInput_opt = Some(Multisig2of2Input(keyManager, d.commitments.params, parentCommitments.commitment)),
             fundingPubkeyScript = parentCommitments.commitInput.txOut.publicKeyScript, // same pubkey script as before
-            localOutputs = cmd.spliceOut_opt.toList.map(s => TxOut(s.amount, s.scriptPubKey)),
+            localOutputs = cmd.spliceOutputs,
             lockTime = spliceInit.lockTime,
             dustLimit = d.commitments.params.localParams.dustLimit.max(d.commitments.params.remoteParams.dustLimit),
             targetFeerate = spliceInit.feerate,
@@ -1430,8 +1430,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       }
 
     case Event(WatchAlternativeCommitTxConfirmedTriggered(_, _, tx), d: DATA_CLOSING) =>
-      d.commitments.all
-        .find(c => tx.txIn.map(_.outPoint.txid).contains(c.fundingTxId)) match {
+      d.commitments.resolveCommitment(tx) match {
         case Some(commitment) =>
           log.warning("a commit tx for fundingTxIndex={} fundingTxid={} has been confirmed", commitment.fundingTxIndex, commitment.fundingTxId)
           val commitments1 = d.commitments.copy(
@@ -1440,7 +1439,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
           )
           // we reset the state
           val d1 = d.copy(commitments = commitments1)
-          if (d.localCommitPublished.exists(_.commitTx.txid == tx.txid)) {
+          if (commitment.localCommit.commitTxAndRemoteSig.commitTx.tx.txid == tx.txid) {
             // our local commit has been published from the outside, it's unexpected but let's deal with it anyway
             spendLocalCurrent(d1)
           } else if (commitment.remoteCommit.txid == tx.txid && commitment.remoteCommit.index == d.commitments.remoteCommitIndex) {
@@ -1968,26 +1967,22 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
       if (d.commitments.all.map(_.fundingTxId).contains(tx.txid)) {
         // if the spending tx is itself a funding tx, this is a splice and there is nothing to do
         stay()
+      } else if (tx.txid == d.commitments.latest.remoteCommit.txid) {
+        handleRemoteSpentCurrent(tx, d)
+      } else if (d.commitments.latest.nextRemoteCommit_opt.exists(_.commit.txid == tx.txid)) {
+        handleRemoteSpentNext(tx, d)
+      } else if (tx.txid == d.commitments.latest.localCommit.commitTxAndRemoteSig.commitTx.tx.txid) {
+        log.warning(s"processing local commit spent from the outside")
+        spendLocalCurrent(d)
+      } else if (tx.txIn.map(_.outPoint.txid).contains(d.commitments.latest.fundingTxId)) {
+        handleRemoteSpentOther(tx, d)
       } else {
         d.commitments.resolveCommitment(tx) match {
           case Some(commitment) =>
-            if (commitment.fundingTxId == d.commitments.latest.fundingTxId) {
-              if (tx.txid == d.commitments.latest.remoteCommit.txid) {
-                handleRemoteSpentCurrent(tx, d)
-              } else if (d.commitments.latest.nextRemoteCommit_opt.exists(_.commit.txid == tx.txid)) {
-                handleRemoteSpentNext(tx, d)
-              } else if (tx.txid == d.commitments.latest.localCommit.commitTxAndRemoteSig.commitTx.tx.txid) {
-                log.warning(s"processing local commit spent from the outside")
-                spendLocalCurrent(d)
-              } else {
-                handleRemoteSpentOther(tx, d)
-              }
-            } else {
-              log.warning(s"a commit tx for an older commitment has been published txid=${tx.txid} fundingTxIndex=${commitment.fundingTxIndex}")
-              // we watch the commitment tx, in the meantime we force close using the latest commitment
-              blockchain ! WatchAlternativeCommitTxConfirmed(self, tx.txid, nodeParams.channelConf.minDepthBlocks)
-              spendLocalCurrent(d)
-            }
+            log.warning(s"a commit tx for an older commitment has been published txid=${tx.txid} fundingTxIndex=${commitment.fundingTxIndex}")
+            // we watch the commitment tx, in the meantime we force close using the latest commitment
+            blockchain ! WatchAlternativeCommitTxConfirmed(self, tx.txid, nodeParams.channelConf.minDepthBlocks)
+            spendLocalCurrent(d)
           case None =>
             // This must be a former funding tx that has already been pruned, because watches are unordered.
             stay()

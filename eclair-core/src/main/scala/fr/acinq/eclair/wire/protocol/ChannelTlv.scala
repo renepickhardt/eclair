@@ -19,7 +19,7 @@ package fr.acinq.eclair.wire.protocol
 import fr.acinq.bitcoin.scalacompat.Satoshi
 import fr.acinq.eclair.channel.{ChannelType, ChannelTypes}
 import fr.acinq.eclair.wire.protocol.CommonCodecs._
-import fr.acinq.eclair.wire.protocol.TlvCodecs.{tlvField, tlvStream, tmillisatoshi, tsatoshi}
+import fr.acinq.eclair.wire.protocol.TlvCodecs.{tlvField, tlvStream, tmillisatoshi}
 import fr.acinq.eclair.{Alias, FeatureSupport, Features, MilliSatoshi, UInt64}
 import scodec.Codec
 import scodec.bits.ByteVector
@@ -36,6 +36,8 @@ sealed trait AcceptDualFundedChannelTlv extends Tlv
 sealed trait SpliceInitTlv extends Tlv
 
 sealed trait SpliceAckTlv extends Tlv
+
+sealed trait SpliceLockedTlv extends Tlv
 
 object ChannelTlv {
 
@@ -115,6 +117,10 @@ object SpliceAckTlv {
     .typecase(UInt64(2), requireConfirmedInputsCodec)
     .typecase(UInt64(0x47000007), tlvField(tmillisatoshi.as[PushAmountTlv]))
   )
+}
+
+object SpliceLockedTlv {
+  val spliceLockedTlvCodec: Codec[TlvStream[SpliceLockedTlv]] = tlvStream(discriminated[SpliceLockedTlv].by(varint))
 }
 
 object AcceptDualFundedChannelTlv {

@@ -167,10 +167,6 @@ case class Commitment(fundingTxIndex: Long,
   val commitInput: InputInfo = localCommit.commitTxAndRemoteSig.commitTx.input
   val fundingTxId: ByteVector32 = commitInput.outPoint.txid
   val capacity: Satoshi = commitInput.txOut.amount
-  val locked: Boolean = (localFundingStatus, remoteFundingStatus) match {
-    case (_: LocalFundingStatus.Locked, RemoteFundingStatus.Locked) => true
-    case _ => false
-  }
 
   /** Channel reserve that applies to our funds. */
   def localChannelReserve(params: ChannelParams): Satoshi = if (params.channelFeatures.hasFeature(Features.DualFunding)) {
@@ -1027,50 +1023,43 @@ case class Commitments(params: ChannelParams,
     active.forall(_.commitInput.redeemScript == fundingScript)
   }
 
-  def updateLocalFundingStatus(txId: ByteVector32, status: LocalFundingStatus)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
-    all.find(_.fundingTxId == txId) match {
+  /**
+   * Update the local/remote funding status
+   *
+   * @param updateMethod This method is tricky: it passes the fundingTxIndex of the commitment corresponding to the
+   *                     fundingTxId, because in the remote case we may update several commitments.
+   */
+  private def updateFundingStatus(fundingTxId: ByteVector32, updateMethod: Long => PartialFunction[Commitment, Commitment])(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
+    all.find(_.fundingTxId == fundingTxId) match {
       case Some(commitment) =>
-        def updateMethod: PartialFunction[Commitment, Commitment] = {
-          case c if c.fundingTxId == commitment.fundingTxId =>
-            log.info(s"setting localFundingStatus=${status.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
-            c.copy(localFundingStatus = status)
-          case c => c
-        }
-
         val commitments1 = copy(
-          active = active.map(updateMethod),
-          inactive = inactive.map(updateMethod)
+          active = active.map(updateMethod(commitment.fundingTxIndex)),
+          inactive = inactive.map(updateMethod(commitment.fundingTxIndex))
         ).deactivateCommitments().pruneCommitments()
-        val commitment1 = commitments1.all.find(_.fundingTxId == txId).get
+        val commitment1 = commitments1.all.find(_.fundingTxId == fundingTxId).get
         Right(commitments1, commitment1)
       case None =>
-        log.warning(s"funding txid=$txId doesn't match any of our funding txs")
+        log.warning(s"fundingTxId=$fundingTxId doesn't match any of our funding txs")
         Left(this)
     }
   }
 
-  def updateRemoteFundingStatus(txId: ByteVector32)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] = {
-    all.find(_.fundingTxId == txId) match {
-      case Some(commitment) =>
-        def updateMethod: PartialFunction[Commitment, Commitment] = {
-          // all funding older by this one are considered locked
-          case c if c.fundingTxId == commitment.fundingTxId || c.fundingTxIndex < commitment.fundingTxIndex =>
-            log.info(s"setting remoteFundingStatus=${RemoteFundingStatus.Locked.getClass.getSimpleName} for funding txid=$txId index=${c.fundingTxIndex}")
-            c.copy(remoteFundingStatus = RemoteFundingStatus.Locked)
-          case c => c
-        }
+  def updateLocalFundingStatus(fundingTxId: ByteVector32, status: LocalFundingStatus)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] =
+    updateFundingStatus(fundingTxId, _ => {
+      case c if c.fundingTxId == fundingTxId =>
+        log.info(s"setting localFundingStatus=${status.getClass.getSimpleName} for fundingTxId=$fundingTxId fundingTxIndex=${c.fundingTxIndex}")
+        c.copy(localFundingStatus = status)
+      case c => c
+    })
 
-        val commitments1 = copy(
-          active = active.map(updateMethod),
-          inactive = inactive.map(updateMethod)
-        ).deactivateCommitments().pruneCommitments()
-        val commitment1 = commitments1.all.find(_.fundingTxId == txId).get
-        Right(commitments1, commitment1)
-      case None =>
-        log.warning(s"funding txid=$txId doesn't match any of our funding txs")
-        Left(this)
-    }
-  }
+  def updateRemoteFundingStatus(fundingTxId: ByteVector32)(implicit log: LoggingAdapter): Either[Commitments, (Commitments, Commitment)] =
+    updateFundingStatus(fundingTxId, fundingTxIndex => {
+      // all funding older than this one are considered locked
+      case c if c.fundingTxId == fundingTxId || c.fundingTxIndex < fundingTxIndex =>
+        log.info(s"setting remoteFundingStatus=${RemoteFundingStatus.Locked.getClass.getSimpleName} for fundingTxId=$fundingTxId fundingTxIndex=${c.fundingTxIndex}")
+        c.copy(remoteFundingStatus = RemoteFundingStatus.Locked)
+      case c => c
+    })
 
   /**
    * Commitments are considered inactive when they have been superseded by a newer commitment, but can still potentially
@@ -1078,16 +1067,18 @@ case class Commitments(params: ChannelParams,
    * [[pruneCommitments()]], when the next funding tx confirms.
    */
   def deactivateCommitments()(implicit log: LoggingAdapter): Commitments = {
-    val lastLocalLockedIndex: Long = active.filter(_.localFundingStatus.isInstanceOf[LocalFundingStatus.Locked]).map(_.fundingTxIndex).maxOption.getOrElse(-1)
-    val lastRemoteLockedIndex: Long = active.filter(_.remoteFundingStatus == RemoteFundingStatus.Locked).map(_.fundingTxIndex).maxOption.getOrElse(-1)
+    val lastLocalLockedIndex: Long = active.find(_.localFundingStatus.isInstanceOf[LocalFundingStatus.Locked]).map(_.fundingTxIndex).getOrElse(-1)
+    val lastRemoteLockedIndex: Long = active.find(_.remoteFundingStatus == RemoteFundingStatus.Locked).map(_.fundingTxIndex).getOrElse(-1)
     val lastLockedIndex = Math.min(lastLocalLockedIndex, lastRemoteLockedIndex)
     active.find(_.fundingTxIndex == lastLockedIndex) match {
       case Some(lastLocked) =>
         // all commitments older than this one are inactive
         val inactive1 = active.filter(c => c.fundingTxId != lastLocked.fundingTxId && c.fundingTxIndex <= lastLocked.fundingTxIndex)
-        val active1 = active diff inactive1
-        inactive1.foreach(c => log.info("deactivating commitment index={} fundingTxid={}", c.fundingTxIndex, c.fundingTxId))
-        copy(active = active1, inactive = inactive1 ++ inactive)
+        inactive1.foreach(c => log.info("deactivating commitment fundingTxIndex={} fundingTxid={}", c.fundingTxIndex, c.fundingTxId))
+        copy(
+          active = active diff inactive1,
+          inactive = inactive1 ++ inactive
+        )
       case _ =>
         this
     }
@@ -1106,9 +1097,8 @@ case class Commitments(params: ChannelParams,
       case Some(lastConfirmed) =>
         // we can prune all other commitments with the same or lower funding index
         val pruned = inactive.filter(c => c.fundingTxId != lastConfirmed.fundingTxId && c.fundingTxIndex <= lastConfirmed.fundingTxIndex)
-        val inactive1 = inactive diff pruned
         pruned.foreach(c => log.info("pruning commitment index={} fundingTxid={}", c.fundingTxIndex, c.fundingTxId))
-        copy(inactive = inactive1)
+        copy(inactive = inactive diff pruned)
       case _ =>
         this
     }
