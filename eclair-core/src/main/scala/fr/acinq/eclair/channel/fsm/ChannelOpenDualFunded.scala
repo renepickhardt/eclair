@@ -342,7 +342,7 @@ trait ChannelOpenDualFunded extends DualFundingHandlers with ErrorHandlers {
       case InteractiveTxBuilder.Succeeded(fundingTx, commitment) =>
         d.deferred.foreach(self ! _)
         watchFundingConfirmed(fundingTx.sharedTx.txId, fundingTx.fundingParams.minDepth_opt)
-        d.replyTo_opt.foreach(_ ! OpenChannelResponse.Opened(d.channelId))
+        d.replyTo_opt.foreach(_ ! OpenChannelResponse.Opened(d.channelId, commitment.fundingTxId))
         val commitments = Commitments(
           params = d.channelParams,
           changes = CommitmentChanges.init(),

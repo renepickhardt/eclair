@@ -44,7 +44,7 @@ trait SingleFundingHandlers extends CommonFundingHandlers {
     wallet.commit(fundingTx).onComplete {
       case Success(true) =>
         context.system.eventStream.publish(TransactionPublished(channelId, remoteNodeId, fundingTx, fundingTxFee, "funding"))
-        replyTo ! OpenChannelResponse.Opened(channelId)
+        replyTo ! OpenChannelResponse.Opened(channelId, fundingTxId = fundingTx.txid)
       case Success(false) =>
         replyTo ! OpenChannelResponse.Exception(new RuntimeException("couldn't publish funding tx"))
         self ! BITCOIN_FUNDING_PUBLISH_FAILED // fail-fast: this should be returned only when we are really sure the tx has *not* been published

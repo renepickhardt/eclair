@@ -274,9 +274,10 @@ class ApiServiceSpec extends AnyFunSuite with ScalatestRouteTest with IdiomaticM
   test("'open' channels") {
     val nodeId = PublicKey(hex"030bb6a5e0c6b203c7e2180fb78c7ba4bdce46126761d8201b91ddac089cdecc87")
     val channelId = ByteVector32(hex"56d7d6eda04d80138270c49709f1eadb5ab4939e5061309ccdacdb98ce637d0e")
+    val fundingTxId = randomBytes32()
 
     val eclair = mock[Eclair]
-    eclair.open(any, any, any, any, any, any, any)(any[Timeout]) returns Future.successful(OpenChannelResponse.Opened(channelId))
+    eclair.open(any, any, any, any, any, any, any)(any[Timeout]) returns Future.successful(OpenChannelResponse.Opened(channelId, fundingTxId))
     val mockService = new MockService(eclair)
 
     Post("/open", FormData("nodeId" -> nodeId.toString(), "fundingSatoshis" -> "100002").toEntity) ~>
@@ -310,9 +311,10 @@ class ApiServiceSpec extends AnyFunSuite with ScalatestRouteTest with IdiomaticM
   test("'open' channels with standard channelType") {
     val nodeId = PublicKey(hex"030bb6a5e0c6b203c7e2180fb78c7ba4bdce46126761d8201b91ddac089cdecc87")
     val channelId = ByteVector32(hex"56d7d6eda04d80138270c49709f1eadb5ab4939e5061309ccdacdb98ce637d0e")
+    val fundingTxId = randomBytes32()
 
     val eclair = mock[Eclair]
-    eclair.open(any, any, any, any, any, any, any)(any[Timeout]) returns Future.successful(OpenChannelResponse.Opened(channelId))
+    eclair.open(any, any, any, any, any, any, any)(any[Timeout]) returns Future.successful(OpenChannelResponse.Opened(channelId, fundingTxId))
     val mockService = new MockService(eclair)
 
     Post("/open", FormData("nodeId" -> nodeId.toString(), "fundingSatoshis" -> "25000", "channelType" -> "standard").toEntity) ~>
@@ -330,9 +332,10 @@ class ApiServiceSpec extends AnyFunSuite with ScalatestRouteTest with IdiomaticM
   test("'open' channels with static_remotekey channelType") {
     val nodeId = PublicKey(hex"030bb6a5e0c6b203c7e2180fb78c7ba4bdce46126761d8201b91ddac089cdecc87")
     val channelId = ByteVector32(hex"56d7d6eda04d80138270c49709f1eadb5ab4939e5061309ccdacdb98ce637d0e")
+    val fundingTxId = randomBytes32()
 
     val eclair = mock[Eclair]
-    eclair.open(any, any, any, any, any, any, any)(any[Timeout]) returns Future.successful(OpenChannelResponse.Opened(channelId))
+    eclair.open(any, any, any, any, any, any, any)(any[Timeout]) returns Future.successful(OpenChannelResponse.Opened(channelId, fundingTxId))
     val mockService = new MockService(eclair)
 
     Post("/open", FormData("nodeId" -> nodeId.toString(), "fundingSatoshis" -> "25000", "channelType" -> "static_remotekey").toEntity) ~>
@@ -350,9 +353,10 @@ class ApiServiceSpec extends AnyFunSuite with ScalatestRouteTest with IdiomaticM
   test("'open' channels with anchor_outputs channelType") {
     val nodeId = PublicKey(hex"030bb6a5e0c6b203c7e2180fb78c7ba4bdce46126761d8201b91ddac089cdecc87")
     val channelId = ByteVector32(hex"56d7d6eda04d80138270c49709f1eadb5ab4939e5061309ccdacdb98ce637d0e")
+    val fundingTxId = randomBytes32()
 
     val eclair = mock[Eclair]
-    eclair.open(any, any, any, any, any, any, any)(any[Timeout]) returns Future.successful(OpenChannelResponse.Opened(channelId))
+    eclair.open(any, any, any, any, any, any, any)(any[Timeout]) returns Future.successful(OpenChannelResponse.Opened(channelId, fundingTxId))
     val mockService = new MockService(eclair)
 
     Post("/open", FormData("nodeId" -> nodeId.toString(), "fundingSatoshis" -> "25000", "channelType" -> "anchor_outputs").toEntity) ~>

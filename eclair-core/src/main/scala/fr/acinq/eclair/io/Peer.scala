@@ -494,13 +494,12 @@ object Peer {
   sealed trait OpenChannelResponse
   object OpenChannelResponse {
     case class Rejected(reason: String) extends OpenChannelResponse { override def toString = reason }
-    case class Opened(channelId: ByteVector32) extends OpenChannelResponse { override def toString  = s"created channel $channelId" }
+    case class Opened(channelId: ByteVector32, fundingTxId: ByteVector32) extends OpenChannelResponse { override def toString  = s"created channel $channelId" }
     case object Cancelled extends OpenChannelResponse { override def toString  = s"channel creation cancelled" }
     case object Disconnected extends OpenChannelResponse { override def toString = "disconnected" }
     case object TimedOut extends OpenChannelResponse { override def toString = "open channel cancelled, took too long" }
     case class RemoteError(ascii: String) extends OpenChannelResponse { override def toString = s"peer aborted the dual funding flow: '$ascii'" }
     case class Exception(t: Throwable) extends OpenChannelResponse { override def toString = t.getMessage }
-    // @formatter:on
   }
 
   case class SpawnChannelInitiator(replyTo: akka.actor.typed.ActorRef[OpenChannelResponse], cmd: Peer.OpenChannel, channelConfig: ChannelConfig, channelType: SupportedChannelType, localParams: LocalParams)
