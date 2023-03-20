@@ -296,6 +296,12 @@ object Features {
     val mandatory = 152
   }
 
+  // TODO: @pm47 custom splices implementation for phoenix, to be replaced once splices is spec-ed (currently reserved here: https://github.com/lightning/bolts/issues/605)
+  case object SplicePrototype extends Feature with InitFeature {
+    val rfcName = "splice_prototype"
+    val mandatory = 154
+  }
+
   val knownFeatures: Set[Feature] = Set(
     DataLossProtect,
     InitialRoutingSync,
@@ -319,7 +325,8 @@ object Features {
     ZeroConf,
     KeySend,
     TrampolinePaymentPrototype,
-    AsyncPaymentPrototype
+    AsyncPaymentPrototype,
+    SplicePrototype,
   )
 
   // Features may depend on other features, as specified in Bolt 9.
