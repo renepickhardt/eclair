@@ -24,7 +24,7 @@ import akka.pattern._
 import akka.util.Timeout
 import com.softwaremill.quicklens.ModifyPimp
 import fr.acinq.bitcoin.scalacompat.Crypto.PublicKey
-import fr.acinq.bitcoin.scalacompat.{ByteVector32, ByteVector64, Crypto, Satoshi}
+import fr.acinq.bitcoin.scalacompat.{ByteVector32, ByteVector64, Crypto, Satoshi, Script, addressToPublicKeyScript}
 import fr.acinq.eclair.ApiTypes.ChannelNotFound
 import fr.acinq.eclair.balance.CheckBalance.GlobalBalance
 import fr.acinq.eclair.balance.{BalanceActor, ChannelsListener}
@@ -93,7 +93,7 @@ trait Eclair {
 
   def spliceIn(channelId: ByteVector32, amountIn: Satoshi, pushAmount_opt: Option[MilliSatoshi])(implicit timeout: Timeout): Future[CommandResponse[CMD_SPLICE]]
 
-  def spliceOut(channelId: ByteVector32, amountOut: Satoshi, scriptPubKey: ByteVector)(implicit timeout: Timeout): Future[CommandResponse[CMD_SPLICE]]
+  def spliceOut(channelId: ByteVector32, amountOut: Satoshi, scriptOrAddress: Either[ByteVector, String])(implicit timeout: Timeout): Future[CommandResponse[CMD_SPLICE]]
 
   def close(channels: List[ApiTypes.ChannelIdentifier], scriptPubKey_opt: Option[ByteVector], closingFeerates_opt: Option[ClosingFeerates])(implicit timeout: Timeout): Future[Map[ApiTypes.ChannelIdentifier, Either[Throwable, CommandResponse[CMD_CLOSE]]]]
 
@@ -223,11 +223,14 @@ class EclairImpl(appKit: Kit) extends Eclair with Logging {
       ))
   }
 
-  override def spliceOut(channelId: ByteVector32, amountOut: Satoshi, scriptPubKey: ByteVector)(implicit timeout: Timeout): Future[CommandResponse[CMD_SPLICE]] = {
+  override def spliceOut(channelId: ByteVector32, amountOut: Satoshi, scriptOrAddress: Either[ByteVector, String])(implicit timeout: Timeout): Future[CommandResponse[CMD_SPLICE]] = {
     sendToChannelTyped(channel = Left(channelId),
       cmdBuilder = CMD_SPLICE(_,
         spliceIn_opt = None,
-        spliceOut_opt = Some(SpliceOut(amount = amountOut, scriptPubKey = scriptPubKey))
+        spliceOut_opt = Some(SpliceOut(amount = amountOut, scriptPubKey = scriptOrAddress match {
+          case Left(script) => script
+          case Right(address) => Script.write(addressToPublicKeyScript(appKit.nodeParams.chainHash, address))
+        }))
       ))
   }
 

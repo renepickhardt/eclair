@@ -83,8 +83,11 @@ trait Channel {
 
   val spliceOut: Route = postRequest("spliceout") { implicit f =>
     formFields(channelIdFormParam, "amountOut".as[Satoshi], "scriptPubKey".as[ByteVector](bytesUnmarshaller)) {
-      (channelId, amountOut, scriptPubKey) => complete(eclairApi.spliceOut(channelId, amountOut, scriptPubKey))
-    }
+      (channelId, amountOut, scriptPubKey) => complete(eclairApi.spliceOut(channelId, amountOut, Left(scriptPubKey)))
+    } ~
+      formFields(channelIdFormParam, "amountOut".as[Satoshi], "address".as[String]) {
+        (channelId, amountOut, address) => complete(eclairApi.spliceOut(channelId, amountOut, Right(address)))
+      }
   }
 
   val close: Route = postRequest("close") { implicit t =>
