@@ -1139,8 +1139,13 @@ case class Commitments(params: ChannelParams,
     // That's why we compute each index (local and remote) separately and stop at the first one that matches.
     val lastLocalLocked_opt = active.find(_.localFundingStatus.isInstanceOf[LocalFundingStatus.Locked])
     val lastRemoteLocked_opt = active.find(_.remoteFundingStatus == RemoteFundingStatus.Locked)
-    // We select the locked commitment with the smaller value for fundingTxIndex, but both have to be defined
-    val lastLocked_opt = Seq(lastLocalLocked_opt, lastRemoteLocked_opt).minByOption(_.map(_.fundingTxIndex).getOrElse(-1L)).flatten
+    val lastLocked_opt = (lastLocalLocked_opt, lastRemoteLocked_opt) match {
+      // We select the locked commitment with the smaller value for fundingTxIndex, but both have to be defined
+      case (Some(lastLocalLocked), Some(lastRemoteLocked)) => Some(Seq(lastLocalLocked, lastRemoteLocked).minBy(_.fundingTxIndex))
+      // Special case for the initial funding tx, we only require a local lock because channel_ready doesn't explicitly reference a funding tx
+      case (Some(lastLocalLocked), None) if lastLocalLocked.fundingTxIndex == 0 => Some(lastLocalLocked)
+      case _ => None
+    }
     lastLocked_opt match {
       case Some(lastLocked) =>
         // all commitments older than this one are inactive
