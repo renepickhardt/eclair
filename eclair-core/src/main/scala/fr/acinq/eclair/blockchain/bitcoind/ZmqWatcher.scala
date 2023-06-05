@@ -20,6 +20,7 @@ import akka.actor.typed.eventstream.EventStream
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import fr.acinq.bitcoin.scalacompat._
+import fr.acinq.bitcoin.{Block, BlockHeader}
 import fr.acinq.eclair.blockchain.Monitoring.Metrics
 import fr.acinq.eclair.blockchain._
 import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient
@@ -69,7 +70,8 @@ object ZmqWatcher {
 
   final case class GetTxWithMeta(replyTo: ActorRef[GetTxWithMetaResponse], txid: ByteVector32) extends Command
   final case class GetTxWithMetaResponse(txid: ByteVector32, tx_opt: Option[Transaction], lastBlockTimestamp: TimestampSecond)
-
+  final case class SetBlockIndex(index: IndexedBlocks) extends Command
+  final case class BlockIndexFailure(error: Throwable) extends Command
   sealed trait UtxoStatus
   object UtxoStatus {
     case object Unspent extends UtxoStatus
@@ -178,7 +180,7 @@ object ZmqWatcher {
         timers.startSingleTimer(TickNewBlock, 1 second)
         // we start a timer in case we don't receive ZMQ block events
         timers.startSingleTimer(TickBlockTimeout, blockTimeout)
-        new ZmqWatcher(nodeParams, blockCount, client, context, timers).watching(Set.empty[GenericWatch], Map.empty[OutPoint, Set[GenericWatch]])
+        new ZmqWatcher(nodeParams, blockCount, client, context, timers).waitingForIndex(Set.empty[GenericWatch])
       }
     }
 
@@ -214,6 +216,101 @@ object ZmqWatcher {
     }
   }
 
+  case class IndexedBlock(height: BlockHeight, header: BlockHeader, txids: Vector[ByteVector32], spent: Map[OutPoint, Int]) {
+    def getSpendingTx(outPoint: OutPoint): Option[ByteVector32] = spent.get(outPoint).map(index => txids(index))
+  }
+
+  object IndexedBlock {
+    def apply(block: Block, height: BlockHeight): IndexedBlock = {
+      import fr.acinq.bitcoin.scalacompat.KotlinUtils._
+      var index = 0
+      val txids = new Array[ByteVector32](block.tx.size())
+      val spent = collection.mutable.Map.empty[OutPoint, Int]
+
+      val it = block.tx.iterator()
+      while (it.hasNext) {
+        val tx = it.next()
+        txids(index) = kmp2scala(tx.txid)
+        val it1 = tx.txIn.iterator()
+        while (it1.hasNext) {
+          val input = it1.next()
+          spent += kmp2scala(input.outPoint) -> index
+        }
+        index = index + 1
+      }
+
+      new IndexedBlock(height, block.header, txids.toVector, spent.toMap)
+    }
+  }
+
+  case class IndexedBlocks(indexes: Vector[IndexedBlock], maxSize: Int) {
+    def append(indexedBlock: IndexedBlock): IndexedBlocks = {
+      if (indexes.isEmpty) {
+        IndexedBlocks(Vector(indexedBlock), maxSize)
+      } else {
+        require(indexedBlock.height == indexes.last.height + 1)
+        require(indexedBlock.header.hashPreviousBlock == indexes.last.header.hash)
+        val indexes1 = if (indexes.size == maxSize) indexes.drop(1) :+ indexedBlock else indexes :+ indexedBlock
+        IndexedBlocks(indexes1, maxSize)
+      }
+    }
+
+    def prepend(indexedBlock: IndexedBlock): IndexedBlocks = {
+      if (indexes.isEmpty) {
+        IndexedBlocks(Vector(indexedBlock), maxSize)
+      } else {
+        require(indexedBlock.height == indexes.head.height - 1)
+        require(indexedBlock.header.hash == indexes.head.header.hashPreviousBlock)
+        val indexes1 = if (indexes.size == maxSize) indexedBlock +: indexes.dropRight(1) else indexedBlock +: indexes
+        IndexedBlocks(indexes1, maxSize)
+      }
+    }
+
+    def append(block: Block, height: BlockHeight): IndexedBlocks = {
+      val indexedBlock = IndexedBlock(block, height)
+      append(indexedBlock)
+    }
+
+    def prepend(block: Block, height: BlockHeight): IndexedBlocks = {
+      val indexedBlock = IndexedBlock(block, height)
+      prepend(indexedBlock)
+    }
+
+    def getTxHeight(txid: ByteVector32): Option[(BlockHeight, Int)] = {
+      val it = indexes.iterator
+      while (it.hasNext) {
+        val indexedBlock = it.next()
+        val index = indexedBlock.txids.indexOf(txid)
+        if (index >= 0) return Some((indexedBlock.height, index))
+      }
+      None
+    }
+
+    def getSpendingTx(outPoint: OutPoint): Option[ByteVector32] = indexes.find(_.getSpendingTx(outPoint).isDefined).flatMap(_.getSpendingTx(outPoint))
+  }
+
+  object IndexedBlocks {
+    def apply(indexedBlock: IndexedBlock, maxSize: Int): IndexedBlocks = new IndexedBlocks(Vector(indexedBlock), maxSize)
+
+    def apply(block: Block, height: BlockHeight, maxSize: Int): IndexedBlocks = IndexedBlocks(IndexedBlock(block, height), maxSize)
+
+    def build(maxSize: Int, bitcoinClient: BitcoinCoreClient)(implicit ec: ExecutionContext): Future[IndexedBlocks] = {
+      def loop(indexedBlocks: IndexedBlocks): Future[IndexedBlocks] = if (indexedBlocks.indexes.size == indexedBlocks.maxSize) Future.successful(indexedBlocks) else {
+        import fr.acinq.bitcoin.scalacompat.KotlinUtils._
+        for {
+          block <- bitcoinClient.getBlock(indexedBlocks.indexes.head.header.hashPreviousBlock.reversed())
+          updated <- loop(indexedBlocks.prepend(block, indexedBlocks.indexes.head.height - 1))
+        } yield updated
+      }
+
+      for {
+        height <- bitcoinClient.getBlockHeight()
+        blockId <- bitcoinClient.getBlockId(height.toLong)
+        block <- bitcoinClient.getBlock(blockId)
+        indexedBlocks <- loop(IndexedBlocks(block, height, maxSize))
+      } yield indexedBlocks
+    }
+  }
 }
 
 private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client: BitcoinCoreClient, context: ActorContext[ZmqWatcher.Command], timers: TimerScheduler[ZmqWatcher.Command])(implicit ec: ExecutionContext = ExecutionContext.global) {
@@ -224,7 +321,58 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
 
   private val watchdog = context.spawn(Behaviors.supervise(BlockchainWatchdog(nodeParams, 150 seconds)).onFailure(SupervisorStrategy.resume), "blockchain-watchdog")
 
-  private def watching(watches: Set[GenericWatch], watchedUtxos: Map[OutPoint, Set[GenericWatch]]): Behavior[Command] = {
+  context.pipeToSelf(IndexedBlocks.build(100, client)) {
+    case Success(index) => SetBlockIndex(index)
+    case Failure(e) => BlockIndexFailure(e)
+  }
+
+  private def waitingForIndex(watches: Set[GenericWatch]): Behavior[Command] = {
+    Behaviors.withStash(1000) { buffer =>
+      Behaviors.receiveMessage {
+        case w: Watch[_] =>
+          if (watches.contains(w)) {
+            Behaviors.same
+          } else {
+            log.debug("adding watch {}", w)
+            context.watchWith(w.replyTo, StopWatching(w.replyTo))
+            waitingForIndex(watches + w)
+          }
+
+        case StopWatching(origin) =>
+          // we remove watches associated to dead actors
+          val deprecatedWatches = watches.filter(_.replyTo == origin)
+          waitingForIndex(watches -- deprecatedWatches)
+
+        case ValidateRequest(replyTo, ann) =>
+          client.validate(ann).map(replyTo ! _)
+          Behaviors.same
+
+        case GetTxWithMeta(replyTo, txid) =>
+          client.getTransactionMeta(txid).map(replyTo ! _)
+          Behaviors.same
+
+        case r: ListWatches =>
+          r.replyTo ! watches
+          Behaviors.same
+
+        case SetBlockIndex(index) =>
+          log.info("block index is ready")
+          watches.foreach(w => context.self ! w)
+          buffer.unstashAll(watching(Set.empty[GenericWatch], Map.empty[OutPoint, Set[GenericWatch]], index))
+
+        case BlockIndexFailure(error) =>
+          log.error("cannot build block index", error)
+          watches.foreach(w => context.self ! w)
+          buffer.unstashAll(watching(Set.empty[GenericWatch], Map.empty[OutPoint, Set[GenericWatch]], IndexedBlocks(Vector.empty[IndexedBlock], 100)))
+
+        case other =>
+          buffer.stash(other)
+          Behaviors.same
+      }
+    }
+  }
+
+  private def watching(watches: Set[GenericWatch], watchedUtxos: Map[OutPoint, Set[GenericWatch]], indexedBlocks: IndexedBlocks): Behavior[Command] = {
     Behaviors.receiveMessage {
       case ProcessNewTransaction(tx) =>
         log.debug("analyzing txid={} tx={}", tx.txid, tx)
@@ -283,7 +431,7 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
         KamonExt.timeFuture(Metrics.NewBlockCheckConfirmedDuration.withoutTags()) {
           Future.sequence(watches.collect {
             case w: WatchPublished => checkPublished(w)
-            case w: WatchConfirmed[_] => checkConfirmed(w)
+            case w: WatchConfirmed[_] => checkConfirmed(w, indexedBlocks)
           })
         }
         Behaviors.same
@@ -304,7 +452,7 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
               // They are never cleaned up but it is not a big deal for now (1 channel == 1 watch)
               Behaviors.same
             case _ =>
-              watching(watches - watch, removeWatchedUtxos(watchedUtxos, watch))
+              watching(watches - watch, removeWatchedUtxos(watchedUtxos, watch), indexedBlocks)
           }
         } else {
           Behaviors.same
@@ -317,13 +465,13 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
           case _ if watches.contains(w) =>
             Ignore // we ignore duplicates
           case w: WatchSpentBasic[_] =>
-            checkSpentBasic(w)
+            checkSpentBasic(w, indexedBlocks)
             Keep
           case w: WatchSpent[_] =>
-            checkSpent(w)
+            checkSpent(w, indexedBlocks)
             Keep
           case w: WatchConfirmed[_] =>
-            checkConfirmed(w)
+            checkConfirmed(w, indexedBlocks)
             Keep
           case w: WatchPublished =>
             checkPublished(w)
@@ -333,7 +481,7 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
           case Keep =>
             log.debug("adding watch {}", w)
             context.watchWith(w.replyTo, StopWatching(w.replyTo))
-            watching(watches + w, addWatchedUtxos(watchedUtxos, w))
+            watching(watches + w, addWatchedUtxos(watchedUtxos, w), indexedBlocks)
           case Ignore =>
             Behaviors.same
         }
@@ -342,7 +490,7 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
         // we remove watches associated to dead actors
         val deprecatedWatches = watches.filter(_.replyTo == origin)
         val watchedUtxos1 = deprecatedWatches.foldLeft(watchedUtxos) { case (m, w) => removeWatchedUtxos(m, w) }
-        watching(watches -- deprecatedWatches, watchedUtxos1)
+        watching(watches -- deprecatedWatches, watchedUtxos1, indexedBlocks)
 
       case ValidateRequest(replyTo, ann) =>
         client.validate(ann).map(replyTo ! _)
@@ -356,54 +504,72 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
         r.replyTo ! watches
         Behaviors.same
 
+      case other => Behaviors.same
     }
   }
 
-  private def checkSpentBasic(w: WatchSpentBasic[_ <: WatchSpentBasicTriggered]): Future[Unit] = {
-    // NB: we assume parent tx was published, we just need to make sure this particular output has not been spent
-    client.isTransactionOutputSpendable(w.txId, w.outputIndex, includeMempool = true).collect {
-      case false =>
+  private def checkSpentBasic(w: WatchSpentBasic[_ <: WatchSpentBasicTriggered], indexedBlocks: IndexedBlocks): Future[Unit] = {
+    indexedBlocks.getSpendingTx(OutPoint(w.txId.reverse, w.outputIndex)) match {
+      case Some(_) =>
         log.info(s"output=${w.txId}:${w.outputIndex} has already been spent")
         w match {
-          case w: WatchExternalChannelSpent => context.self ! TriggerEvent(w.replyTo, w, WatchExternalChannelSpentTriggered(w.shortChannelId))
+          case w: WatchExternalChannelSpent =>
+            context.self ! TriggerEvent(w.replyTo, w, WatchExternalChannelSpentTriggered(w.shortChannelId))
+            Future.successful(())
+        }
+      case None =>
+        // NB: we assume parent tx was published, we just need to make sure this particular output has not been spent
+        client.isTransactionOutputSpendable(w.txId, w.outputIndex, includeMempool = true).collect {
+          case false =>
+            log.info(s"output=${w.txId}:${w.outputIndex} has already been spent")
+            w match {
+              case w: WatchExternalChannelSpent => context.self ! TriggerEvent(w.replyTo, w, WatchExternalChannelSpentTriggered(w.shortChannelId))
+            }
         }
     }
   }
 
-  private def checkSpent(w: WatchSpent[_ <: WatchSpentTriggered]): Future[Unit] = {
-    // first let's see if the parent tx was published or not
-    client.getTxConfirmations(w.txId).collect {
-      case Some(_) =>
-        // parent tx was published, we need to make sure this particular output has not been spent
-        client.isTransactionOutputSpendable(w.txId, w.outputIndex, includeMempool = true).collect {
-          case false =>
-            // the output has been spent, let's find the spending tx
-            // if we know some potential spending txs, we try to fetch them directly
-            Future.sequence(w.hints.map(txid => client.getTransaction(txid).map(Some(_)).recover { case _ => None }))
-              .map(_
-                .flatten // filter out errors
-                .find(tx => tx.txIn.exists(i => i.outPoint.txid == w.txId && i.outPoint.index == w.outputIndex)) match {
-                case Some(spendingTx) =>
-                  // there can be only one spending tx for an utxo
-                  log.info(s"${w.txId}:${w.outputIndex} has already been spent by a tx provided in hints: txid=${spendingTx.txid}")
-                  context.self ! ProcessNewTransaction(spendingTx)
-                case None =>
-                  // no luck, we have to do it the hard way...
-                  log.info(s"${w.txId}:${w.outputIndex} has already been spent, looking for the spending tx in the mempool")
-                  client.getMempool().map { mempoolTxs =>
-                    mempoolTxs.filter(tx => tx.txIn.exists(i => i.outPoint.txid == w.txId && i.outPoint.index == w.outputIndex)) match {
-                      case Nil =>
-                        log.warn(s"${w.txId}:${w.outputIndex} has already been spent, spending tx not in the mempool, looking in the blockchain...")
-                        client.lookForSpendingTx(None, w.txId, w.outputIndex).map { tx =>
-                          log.warn(s"found the spending tx of ${w.txId}:${w.outputIndex} in the blockchain: txid=${tx.txid}")
-                          context.self ! ProcessNewTransaction(tx)
+  private def checkSpent(w: WatchSpent[_ <: WatchSpentTriggered], indexedBlocks: IndexedBlocks): Future[Unit] = {
+    indexedBlocks.getSpendingTx(OutPoint(w.txId.reverse, w.outputIndex)) match {
+      case Some(txid) => client.getTransaction(txid).map { tx =>
+        log.warn(s"found the spending tx of ${w.txId}:${w.outputIndex} in the blockchain: txid=${tx.txid}")
+        context.self ! ProcessNewTransaction(tx)
+      }
+      case None =>
+        // first let's see if the parent tx was published or not
+        client.getTxConfirmations(w.txId).collect {
+          case Some(_) =>
+            // parent tx was published, we need to make sure this particular output has not been spent
+            client.isTransactionOutputSpendable(w.txId, w.outputIndex, includeMempool = true).collect {
+              case false =>
+                // the output has been spent, let's find the spending tx
+                // if we know some potential spending txs, we try to fetch them directly
+                Future.sequence(w.hints.map(txid => client.getTransaction(txid).map(Some(_)).recover { case _ => None }))
+                  .map(_
+                    .flatten // filter out errors
+                    .find(tx => tx.txIn.exists(i => i.outPoint.txid == w.txId && i.outPoint.index == w.outputIndex)) match {
+                    case Some(spendingTx) =>
+                      // there can be only one spending tx for an utxo
+                      log.info(s"${w.txId}:${w.outputIndex} has already been spent by a tx provided in hints: txid=${spendingTx.txid}")
+                      context.self ! ProcessNewTransaction(spendingTx)
+                    case None =>
+                      // no luck, we have to do it the hard way...
+                      log.info(s"${w.txId}:${w.outputIndex} has already been spent, looking for the spending tx in the mempool")
+                      client.getMempool().map { mempoolTxs =>
+                        mempoolTxs.filter(tx => tx.txIn.exists(i => i.outPoint.txid == w.txId && i.outPoint.index == w.outputIndex)) match {
+                          case Nil =>
+                            log.warn(s"${w.txId}:${w.outputIndex} has already been spent, spending tx not in the mempool, looking in the blockchain...")
+                            client.lookForSpendingTx(None, w.txId, w.outputIndex).map { tx =>
+                              log.warn(s"found the spending tx of ${w.txId}:${w.outputIndex} in the blockchain: txid=${tx.txid}")
+                              context.self ! ProcessNewTransaction(tx)
+                            }
+                          case txs =>
+                            log.info(s"found ${txs.size} txs spending ${w.txId}:${w.outputIndex} in the mempool: txids=${txs.map(_.txid).mkString(",")}")
+                            txs.foreach(tx => context.self ! ProcessNewTransaction(tx))
                         }
-                      case txs =>
-                        log.info(s"found ${txs.size} txs spending ${w.txId}:${w.outputIndex} in the mempool: txids=${txs.map(_.txid).mkString(",")}")
-                        txs.foreach(tx => context.self ! ProcessNewTransaction(tx))
-                    }
-                  }
-              })
+                      }
+                  })
+            }
         }
     }
   }
@@ -413,24 +579,30 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
     client.getTransaction(w.txId).map(tx => context.self ! TriggerEvent(w.replyTo, w, WatchPublishedTriggered(tx)))
   }
 
-  private def checkConfirmed(w: WatchConfirmed[_ <: WatchConfirmedTriggered]): Future[Unit] = {
+  private def buildTrigger(w: WatchConfirmed[_ <: WatchConfirmedTriggered], height: BlockHeight, index: Int, tx: Transaction): TriggerEvent[_ <: WatchConfirmedTriggered] = w match {
+    case w1: WatchFundingConfirmed => TriggerEvent(w1.replyTo, w1, WatchFundingConfirmedTriggered(height, index, tx))
+    case w1: WatchFundingDeeplyBuried => TriggerEvent(w1.replyTo, w1, WatchFundingDeeplyBuriedTriggered(height, index, tx))
+    case w1: WatchTxConfirmed => TriggerEvent(w1.replyTo, w1, WatchTxConfirmedTriggered(height, index, tx))
+    case w1: WatchParentTxConfirmed => TriggerEvent(w1.replyTo, w1, WatchParentTxConfirmedTriggered(height, index, tx))
+    case w1: WatchAlternativeCommitTxConfirmed => TriggerEvent(w1.replyTo, w1, WatchAlternativeCommitTxConfirmedTriggered(height, index, tx))
+  }
+
+  private def checkConfirmed(w: WatchConfirmed[_ <: WatchConfirmedTriggered], indexedBlocks: IndexedBlocks): Future[Unit] = {
     log.debug("checking confirmations of txid={}", w.txId)
-    // NB: this is very inefficient since internally we call `getrawtransaction` three times, but it doesn't really
-    // matter because this only happens once, when the watched transaction has reached min_depth
-    client.getTxConfirmations(w.txId).flatMap {
-      case Some(confirmations) if confirmations >= w.minDepth =>
-        client.getTransaction(w.txId).flatMap { tx =>
-          client.getTransactionShortId(w.txId).map {
-            case (height, index) => w match {
-              case w: WatchFundingConfirmed => context.self ! TriggerEvent(w.replyTo, w, WatchFundingConfirmedTriggered(height, index, tx))
-              case w: WatchFundingDeeplyBuried => context.self ! TriggerEvent(w.replyTo, w, WatchFundingDeeplyBuriedTriggered(height, index, tx))
-              case w: WatchTxConfirmed => context.self ! TriggerEvent(w.replyTo, w, WatchTxConfirmedTriggered(height, index, tx))
-              case w: WatchParentTxConfirmed => context.self ! TriggerEvent(w.replyTo, w, WatchParentTxConfirmedTriggered(height, index, tx))
-              case w: WatchAlternativeCommitTxConfirmed => context.self ! TriggerEvent(w.replyTo, w, WatchAlternativeCommitTxConfirmedTriggered(height, index, tx))
+    indexedBlocks.getTxHeight(w.txId) match {
+      case Some((height, index)) => client.getTransaction(w.txId).map(tx => context.self ! buildTrigger(w, height, index, tx))
+      case None =>
+        // NB: this is very inefficient since internally we call `getrawtransaction` three times, but it doesn't really
+        // matter because this only happens once, when the watched transaction has reached min_depth
+        client.getTxConfirmations(w.txId).flatMap {
+          case Some(confirmations) if confirmations >= w.minDepth =>
+            client.getTransaction(w.txId).flatMap { tx =>
+              client.getTransactionShortId(w.txId).map {
+                case (height, index) => context.self ! buildTrigger(w, height, index, tx)
+              }
             }
-          }
+          case _ => Future.successful((): Unit)
         }
-      case _ => Future.successful((): Unit)
     }
   }
 

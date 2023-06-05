@@ -167,23 +167,24 @@ class BitcoinCoreClient(val rpcClient: BitcoinJsonRPCClient) extends OnChainWall
    * @return the transaction spending the given output.
    */
   def lookForSpendingTx(blockhash_opt: Option[ByteVector32], txid: ByteVector32, outputIndex: Int)(implicit ec: ExecutionContext): Future[Transaction] = {
-    lookForSpendingTx(blockhash_opt.map(KotlinUtils.scala2kmp), KotlinUtils.scala2kmp(txid), outputIndex)
+    lookForSpendingTx(blockhash_opt, KotlinUtils.scala2kmp(txid), outputIndex)
   }
 
-  def lookForSpendingTx(blockhash_opt: Option[fr.acinq.bitcoin.ByteVector32], txid: fr.acinq.bitcoin.ByteVector32, outputIndex: Int)(implicit ec: ExecutionContext): Future[Transaction] =
+  def lookForSpendingTx(blockhash_opt: Option[ByteVector32], txid: fr.acinq.bitcoin.ByteVector32, outputIndex: Int)(implicit ec: ExecutionContext): Future[Transaction] = {
+    import KotlinUtils._
     for {
       blockhash <- blockhash_opt match {
         case Some(b) => Future.successful(b)
         case None => rpcClient.invoke("getbestblockhash").collect { case JString(b) => ByteVector32.fromValidHex(b) }
       }
-      // with a verbosity of 0, getblock returns the raw serialized block
-      block <- rpcClient.invoke("getblock", blockhash, 0).collect { case JString(b) => Block.read(b) }
-      prevblockhash = block.header.hashPreviousBlock.reversed()
+      block <- getBlock(blockhash)
+      prevblockhash = kmp2scala(block.header.hashPreviousBlock.reversed())
       res <- block.tx.asScala.find(tx => tx.txIn.asScala.exists(i => i.outPoint.txid == txid && i.outPoint.index == outputIndex)) match {
         case None => lookForSpendingTx(Some(prevblockhash), txid, outputIndex)
         case Some(tx) => Future.successful(KotlinUtils.kmp2scala(tx))
       }
     } yield res
+  }
 
   def listTransactions(count: Int, skip: Int)(implicit ec: ExecutionContext): Future[List[WalletTx]] = rpcClient.invoke("listtransactions", "*", count, skip).map {
     case JArray(txs) => txs.map(tx => {
@@ -515,6 +516,42 @@ class BitcoinCoreClient(val rpcClient: BitcoinJsonRPCClient) extends OnChainWall
   def getBlockHeight()(implicit ec: ExecutionContext): Future[BlockHeight] =
     rpcClient.invoke("getblockcount").collect {
       case JInt(count) => BlockHeight(count.toLong)
+    }
+
+  /**
+   *
+   * @param blockId block
+   * @return the block `blockId`
+   */
+  def getBlock(blockId: ByteVector32)(implicit ec: ExecutionContext): Future[Block] = {
+    // verbosity = 0 means that the raw block will be returned without additional JSON data.
+    // this is implemented very efficiently in bitcoin core, so this call is not "expensive"
+    rpcClient.invoke("getblock", blockId, 0).collect {
+      case JString(raw) => Block.read(raw)
+    }
+  }
+
+  /**
+   *
+   * @param height height of the last block
+   * @param count  number of blocks
+   * @return a list of blocks (ordered by ascending height)
+   */
+  def getBlocks(height: BlockHeight, count: Int)(implicit ec: ExecutionContext): Future[List[Block]] = {
+    import fr.acinq.bitcoin.scalacompat.KotlinUtils._
+
+    def loop(acc: List[Block]): Future[List[Block]] = if (acc.length == count) Future.successful(acc) else {
+      getBlock(acc.head.header.hashPreviousBlock.reversed())(ec).flatMap(b => loop(b :: acc))
+    }
+
+    getBlockId(height.toLong)(ec)
+      .flatMap(blockId => getBlock(blockId)(ec))(ec)
+      .flatMap(block => loop(block :: Nil))
+  }
+
+  def getBlockId(height: Long)(implicit ec: ExecutionContext): Future[ByteVector32] =
+    rpcClient.invoke("getblockhash", height).collect {
+      case JString(raw) => ByteVector32.fromValidHex(raw)
     }
 
   def validate(c: ChannelAnnouncement)(implicit ec: ExecutionContext): Future[ValidateResult] = {
