@@ -299,7 +299,7 @@ object OutgoingPaymentPacket {
       outgoing <- getOutgoingChannel(privateKey, paymentTmp, route)
       onion <- buildOnion(PaymentOnionCodecs.paymentOnionPayloadLength, outgoing.payment.payloads, paymentHash) // BOLT 2 requires that associatedData == paymentHash
     } yield {
-      val cmd = CMD_ADD_HTLC(replyTo, outgoing.payment.amount, paymentHash, outgoing.payment.expiry, onion.packet, outgoing.nextBlinding_opt, Origin.Hot(replyTo, upstream), commit = true)
+      val cmd = CMD_ADD_HTLC(replyTo, outgoing.payment.amount, paymentHash, outgoing.payment.expiry, onion.packet, outgoing.nextBlinding_opt, confidence = 1.0, Origin.Hot(replyTo, upstream), commit = true)
       OutgoingPaymentPacket(cmd, outgoing.shortChannelId, onion.sharedSecrets)
     }
   }
