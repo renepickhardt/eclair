@@ -34,7 +34,7 @@ import fr.acinq.eclair.blockchain.fee._
 import fr.acinq.eclair.channel.Register
 import fr.acinq.eclair.channel.fsm.Channel
 import fr.acinq.eclair.crypto.WeakEntropyPool
-import fr.acinq.eclair.crypto.keymanager.{LocalChannelKeyManager, LocalNodeKeyManager, LocalOnchainKeyManager}
+import fr.acinq.eclair.crypto.keymanager.{LocalChannelKeyManager, LocalNodeKeyManager, LocalOnChainKeyManager}
 import fr.acinq.eclair.db.Databases.FileBackup
 import fr.acinq.eclair.db.FileBackupHandler.FileBackupParams
 import fr.acinq.eclair.db.{Databases, DbEventHandler, FileBackupHandler}
@@ -121,7 +121,7 @@ class Setup(val datadir: File,
   // early checks
   PortChecker.checkAvailable(serverBindingAddress)
 
-  val onchainKeyManager_opt = LocalOnchainKeyManager.load(datadir, NodeParams.hashFromChain(chain))
+  val onchainKeyManager_opt = LocalOnChainKeyManager.load(datadir, NodeParams.hashFromChain(chain))
 
   val (bitcoin, bitcoinChainHash) = {
     val wallet = {

@@ -31,7 +31,7 @@ import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient._
 import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinJsonRPCAuthMethod.UserPassword
 import fr.acinq.eclair.blockchain.bitcoind.rpc.{BasicBitcoinJsonRPCClient, BitcoinCoreClient, BitcoinJsonRPCClient, JsonRPCError}
 import fr.acinq.eclair.blockchain.fee.{FeeratePerByte, FeeratePerKw}
-import fr.acinq.eclair.crypto.keymanager.LocalOnchainKeyManager
+import fr.acinq.eclair.crypto.keymanager.LocalOnChainKeyManager
 import fr.acinq.eclair.transactions.{Scripts, Transactions}
 import fr.acinq.eclair.{BlockHeight, TestConstants, TestKitBaseClass, TimestampSecond, randomBytes32, randomKey}
 import grizzled.slf4j.Logging
@@ -1437,7 +1437,7 @@ class BitcoinCoreClientWithEclairSignerSpec extends BitcoinCoreClientSpec {
     val seed = MnemonicCode.toSeed(mnemmonics, "")
     val master = DeterministicWallet.generate(seed)
 
-    val onchainKeyManager = new LocalOnchainKeyManager(s"eclair_$hex", seed, TimestampSecond.now(), Block.RegtestGenesisBlock.hash)
+    val onchainKeyManager = new LocalOnChainKeyManager(s"eclair_$hex", seed, TimestampSecond.now(), Block.RegtestGenesisBlock.hash)
     val jsonRpcClient = new BasicBitcoinJsonRPCClient(rpcAuthMethod = bitcoinrpcauthmethod, host = "localhost", port = bitcoindRpcPort, wallet = Some(s"eclair_$hex"))
     val wallet1 = new BitcoinCoreClient(jsonRpcClient, Some(onchainKeyManager))
     wallet1.createEclairBackedWallet().pipeTo(sender.ref)
@@ -1477,7 +1477,7 @@ class BitcoinCoreClientWithEclairSignerSpec extends BitcoinCoreClientSpec {
     (1 to 10).foreach { _ =>
       val seed = randomBytes32()
       val hex = seed.toString()
-      val onchainKeyManager = new LocalOnchainKeyManager(s"eclair_$hex", seed, TimestampSecond.now(), Block.RegtestGenesisBlock.hash)
+      val onchainKeyManager = new LocalOnChainKeyManager(s"eclair_$hex", seed, TimestampSecond.now(), Block.RegtestGenesisBlock.hash)
       val jsonRpcClient = new BasicBitcoinJsonRPCClient(rpcAuthMethod = bitcoinrpcauthmethod, host = "localhost", port = bitcoindRpcPort, wallet = Some(s"eclair_$hex"))
       val wallet1 = new BitcoinCoreClient(jsonRpcClient, Some(onchainKeyManager))
       wallet1.createEclairBackedWallet().pipeTo(sender.ref)

@@ -722,12 +722,12 @@ class EclairImpl(appKit: Kit) extends Eclair with Logging {
   }
 
   override def getDescriptors(account: Long): Descriptors = appKit.wallet match {
-    case bitcoinCoreClient: BitcoinCoreClient if bitcoinCoreClient.onchainKeyManager_opt.isDefined => bitcoinCoreClient.onchainKeyManager_opt.get.getDescriptors(account)
+    case bitcoinCoreClient: BitcoinCoreClient if bitcoinCoreClient.onChainKeyManager_opt.isDefined => bitcoinCoreClient.onChainKeyManager_opt.get.getDescriptors(account)
     case _ => throw new RuntimeException("onchain seed is not configured")
   }
 
   override def getOnchainMasterPubKey(account: Long): String = appKit.wallet match {
-    case bitcoinCoreClient: BitcoinCoreClient if bitcoinCoreClient.onchainKeyManager_opt.isDefined => bitcoinCoreClient.onchainKeyManager_opt.get.getOnchainMasterPubKey(account)
+    case bitcoinCoreClient: BitcoinCoreClient if bitcoinCoreClient.onChainKeyManager_opt.isDefined => bitcoinCoreClient.onChainKeyManager_opt.get.getOnchainMasterPubKey(account)
     case _ => throw new RuntimeException("onchain seed is not configured")
   }
 

@@ -14,7 +14,7 @@ import java.io.File
 import scala.jdk.CollectionConverters.MapHasAsScala
 import scala.util.Try
 
-object LocalOnchainKeyManager extends Logging {
+object LocalOnChainKeyManager extends Logging {
   def descriptorChecksum(span: String): String = fr.acinq.bitcoin.Descriptor.checksum(span)
 
   /**
@@ -24,7 +24,7 @@ object LocalOnchainKeyManager extends Logging {
    * @param chainHash chain we're on
    * @return a LocalOnchainKeyManager instance if a configuration file exists
    */
-  def load(datadir: File, chainHash: ByteVector32): Option[LocalOnchainKeyManager] = {
+  def load(datadir: File, chainHash: ByteVector32): Option[LocalOnChainKeyManager] = {
     // we use a specific file instead of adding values to eclair's configuration file because it is available everywhere in the code through
     // the actor system's settings and we'd like to restrict access to the onchain wallet seed
     val file = new File(datadir, "eclair-signer.conf")
@@ -34,7 +34,7 @@ object LocalOnchainKeyManager extends Logging {
       val mnemonics = config.getString("eclair.signer.mnemonics")
       val passphrase = config.getString("eclair.signer.passphrase")
       val timestamp = config.getLong("eclair.signer.timestamp")
-      val keyManager = new LocalOnchainKeyManager(wallet, MnemonicCode.toSeed(mnemonics, passphrase), TimestampSecond(timestamp), chainHash)
+      val keyManager = new LocalOnChainKeyManager(wallet, MnemonicCode.toSeed(mnemonics, passphrase), TimestampSecond(timestamp), chainHash)
       logger.info(s"using onchain key manager wallet=${wallet} xpub=${keyManager.getOnchainMasterPubKey(0)}")
       Some(keyManager)
     } else {
@@ -43,9 +43,9 @@ object LocalOnchainKeyManager extends Logging {
   }
 }
 
-class LocalOnchainKeyManager(override val wallet: String, seed: ByteVector, timestamp: TimestampSecond, chainHash: ByteVector32) extends OnchainKeyManager with Logging {
+class LocalOnChainKeyManager(override val wallet: String, seed: ByteVector, timestamp: TimestampSecond, chainHash: ByteVector32) extends OnChainKeyManager with Logging {
 
-  import LocalOnchainKeyManager._
+  import LocalOnChainKeyManager._
 
   // master key. we will use it to generate a BIP84 wallet that can be used:
   // - to generate a watch-only wallet with any BIP84-compatible bitcoin wallet

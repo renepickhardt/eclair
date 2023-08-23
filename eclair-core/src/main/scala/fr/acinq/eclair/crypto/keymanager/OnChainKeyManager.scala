@@ -8,7 +8,7 @@ import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient.Descriptors
 
 import scala.util.Try
 
-trait OnchainKeyManager {
+trait OnChainKeyManager {
   def wallet: String
 
   /**

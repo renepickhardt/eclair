@@ -26,7 +26,7 @@ import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient.PreviousTx
 import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinJsonRPCAuthMethod.{SafeCookie, UserPassword}
 import fr.acinq.eclair.blockchain.bitcoind.rpc.{BasicBitcoinJsonRPCClient, BitcoinCoreClient, BitcoinJsonRPCAuthMethod, BitcoinJsonRPCClient}
 import fr.acinq.eclair.blockchain.fee.{FeeratePerByte, FeeratePerKB, FeeratePerKw}
-import fr.acinq.eclair.crypto.keymanager.LocalOnchainKeyManager
+import fr.acinq.eclair.crypto.keymanager.LocalOnChainKeyManager
 import fr.acinq.eclair.integration.IntegrationSpec
 import fr.acinq.eclair.{BlockHeight, TestUtils, TimestampSecond, randomKey}
 import grizzled.slf4j.Logging
@@ -88,7 +88,7 @@ trait BitcoindService extends Logging {
        |}
        |""".stripMargin
   val onchainKeyManager = {
-    new LocalOnchainKeyManager("eclair", MnemonicCode.toSeed(mnemonics, passphrase), TimestampSecond.now(), Block.RegtestGenesisBlock.hash)
+    new LocalOnChainKeyManager("eclair", MnemonicCode.toSeed(mnemonics, passphrase), TimestampSecond.now(), Block.RegtestGenesisBlock.hash)
   }
 
   def startBitcoind(useCookie: Boolean = false,
