@@ -473,18 +473,17 @@ class BitcoinCoreClient(val rpcClient: BitcoinJsonRPCClient, val onChainKeyManag
 
     def sign(psbt: Psbt): Future[ProcessPsbtResponse] = if (useEclairSigner) {
       val onchainKeyManager = onChainKeyManager_opt.getOrElse(throw new RuntimeException("We are configured to use an eclair signer has not been loaded")) // this should not be possible
-      onchainKeyManager.signPsbt(psbt, ourInputs, ourOutputs) match {
-        case Success(signedPsbt) => Future.successful(ProcessPsbtResponse(signedPsbt, signedPsbt.extract().isRight))
-        case Failure(error) => Future.failed(error)
-      }
+      for {
+        filled <- processPsbt(psbt, sign = false)
+        signed = onchainKeyManager.signPsbt(filled.psbt, ourInputs, ourOutputs).get
+      } yield ProcessPsbtResponse(signed, signed.extract().isRight)
     } else {
       processPsbt(psbt, sign = true)
     }
 
     for {
       updated <- utxoUpdatePsbt(psbt)
-      filled <- processPsbt(updated, sign = false) // called with sign=false to fill input and output HD paths
-      signed <- sign(filled.psbt)
+      signed <- sign(updated)
     } yield signed
   }
 
