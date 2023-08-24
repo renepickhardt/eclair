@@ -16,13 +16,13 @@
 
 package fr.acinq.eclair.blockchain.bitcoind.rpc
 
-import fr.acinq.bitcoin.psbt.{Psbt, UpdateFailure}
+import fr.acinq.bitcoin.psbt.Psbt
 import fr.acinq.bitcoin.scalacompat.Crypto.PublicKey
 import fr.acinq.bitcoin.scalacompat._
 import fr.acinq.bitcoin.{Bech32, Block, SigHash}
 import fr.acinq.eclair.ShortChannelId.coordinates
 import fr.acinq.eclair.blockchain.OnChainWallet
-import fr.acinq.eclair.blockchain.OnChainWallet.{FundTransactionResponse, MakeFundingTxResponse, OnChainBalance}
+import fr.acinq.eclair.blockchain.OnChainWallet.{FundTransactionResponse, MakeFundingTxResponse, OnChainBalance, ProcessPsbtResponse}
 import fr.acinq.eclair.blockchain.bitcoind.ZmqWatcher.{GetTxWithMetaResponse, UtxoStatus, ValidateResult}
 import fr.acinq.eclair.blockchain.fee.{FeeratePerKB, FeeratePerKw}
 import fr.acinq.eclair.crypto.keymanager.OnChainKeyManager
@@ -760,32 +760,6 @@ object BitcoinCoreClient {
         if (inputWeights.isEmpty) None else Some(inputWeights)
       )
     }
-  }
-
-  case class ProcessPsbtResponse(psbt: Psbt, complete: Boolean) {
-
-    import KotlinUtils._
-
-    // Extract a fully signed transaction from `psbt`
-    // If the transaction is just partially signed, this method will fail and you must call extractPartiallySignedTx instead
-    def extractFinalTx: Either[UpdateFailure, Transaction] = {
-      val extracted = psbt.extract()
-      if (extracted.isLeft) Left(extracted.getLeft) else Right(extracted.getRight)
-    }
-
-    // Extract a partially signed transaction from `psbt`
-    def extractPartiallySignedTx: Transaction = {
-      var partiallySignedTx: Transaction = psbt.getGlobal.getTx
-      for (i <- 0 until psbt.getInputs.size()) {
-        val scriptWitness = psbt.getInputs.get(i).getScriptWitness
-        if (scriptWitness != null) {
-          partiallySignedTx = partiallySignedTx.updateWitness(i, scriptWitness)
-        }
-      }
-      partiallySignedTx
-    }
-
-    def finalTx = extractFinalTx.getOrElse(throw new RuntimeException("cannot extract transaction from psbt"))
   }
 
   case class PreviousTx(txid: ByteVector32, vout: Long, scriptPubKey: String, redeemScript: String, witnessScript: String, amount: BigDecimal)
