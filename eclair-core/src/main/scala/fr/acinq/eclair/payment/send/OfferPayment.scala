@@ -19,7 +19,7 @@ package fr.acinq.eclair.payment.send
 import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.{ActorRef, typed}
-import fr.acinq.bitcoin.scalacompat.ByteVector32
+import fr.acinq.bitcoin.scalacompat.BlockHash
 import fr.acinq.bitcoin.scalacompat.Crypto.PrivateKey
 import fr.acinq.eclair.message.Postman.{OnionMessageResponse, SendMessage}
 import fr.acinq.eclair.message.{OnionMessages, Postman}
@@ -35,7 +35,7 @@ object OfferPayment {
 
   case class UnsupportedFeatures(features: Features[InvoiceFeature]) extends Failure
 
-  case class UnsupportedChains(chains: Seq[ByteVector32]) extends Failure
+  case class UnsupportedChains(chains: Seq[BlockHash]) extends Failure
 
   case class ExpiredOffer(expiryDate: TimestampSecond) extends Failure
 

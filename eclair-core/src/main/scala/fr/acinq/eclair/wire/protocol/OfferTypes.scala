@@ -18,7 +18,7 @@ package fr.acinq.eclair.wire.protocol
 
 import fr.acinq.bitcoin.Bech32
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey, XonlyPublicKey}
-import fr.acinq.bitcoin.scalacompat.{Block, ByteVector32, ByteVector64, Crypto, LexicographicalOrdering}
+import fr.acinq.bitcoin.scalacompat.{Block, BlockHash, ByteVector32, ByteVector64, Crypto, LexicographicalOrdering}
 import fr.acinq.eclair.crypto.Sphinx.RouteBlinding.BlindedRoute
 import fr.acinq.eclair.wire.protocol.CommonCodecs.varint
 import fr.acinq.eclair.wire.protocol.OnionRoutingCodecs.{ForbiddenTlv, InvalidTlvPayload, MissingRequiredTlv}
@@ -49,7 +49,7 @@ object OfferTypes {
   /**
    * Chains for which the offer is valid. If empty, bitcoin mainnet is implied.
    */
-  case class OfferChains(chains: Seq[ByteVector32]) extends OfferTlv
+  case class OfferChains(chains: Seq[BlockHash]) extends OfferTlv
 
   /**
    * Data from the offer creator to themselves, for instance a signature that authenticates the offer so that they don't need to store the offer.
@@ -113,7 +113,7 @@ object OfferTypes {
   /**
    * If `OfferChains` is present, this specifies which chain is going to be used to pay.
    */
-  case class InvoiceRequestChain(hash: ByteVector32) extends InvoiceRequestTlv
+  case class InvoiceRequestChain(hash: BlockHash) extends InvoiceRequestTlv
 
   /**
    * Amount that the sender is going to send.
@@ -218,7 +218,7 @@ object OfferTypes {
   case class Error(message: String) extends InvoiceErrorTlv
 
   case class Offer(records: TlvStream[OfferTlv]) {
-    val chains: Seq[ByteVector32] = records.get[OfferChains].map(_.chains).getOrElse(Seq(Block.LivenetGenesisBlock.hash))
+    val chains: Seq[BlockHash] = records.get[OfferChains].map(_.chains).getOrElse(Seq(Block.LivenetGenesisBlock.hash))
     val metadata: Option[ByteVector] = records.get[OfferMetadata].map(_.data)
     val currency: Option[String] = records.get[OfferCurrency].map(_.iso4217)
     val amount: Option[MilliSatoshi] = currency match {
@@ -259,7 +259,7 @@ object OfferTypes {
               description: String,
               nodeId: PublicKey,
               features: Features[Bolt12Feature],
-              chain: ByteVector32,
+              chain: BlockHash,
               additionalTlvs: Set[OfferTlv] = Set.empty,
               customTlvs: Set[GenericTlv] = Set.empty): Offer = {
       val tlvs: Set[OfferTlv] = Set(
@@ -298,7 +298,7 @@ object OfferTypes {
     val offer: Offer = Offer.validate(filterOfferFields(records)).toOption.get
 
     val metadata: ByteVector = records.get[InvoiceRequestMetadata].get.data
-    val chain: ByteVector32 = records.get[InvoiceRequestChain].map(_.hash).getOrElse(Block.LivenetGenesisBlock.hash)
+    val chain: BlockHash = records.get[InvoiceRequestChain].map(_.hash).getOrElse(Block.LivenetGenesisBlock.hash)
     val amount: Option[MilliSatoshi] = records.get[InvoiceRequestAmount].map(_.amount)
     val features: Features[Bolt12Feature] = records.get[InvoiceRequestFeatures].map(_.features.bolt12Features()).getOrElse(Features.empty)
     val quantity_opt: Option[Long] = records.get[InvoiceRequestQuantity].map(_.quantity)
@@ -355,7 +355,7 @@ object OfferTypes {
               quantity: Long,
               features: Features[Bolt12Feature],
               payerKey: PrivateKey,
-              chain: ByteVector32,
+              chain: BlockHash,
               additionalTlvs: Set[InvoiceRequestTlv] = Set.empty,
               customTlvs: Set[GenericTlv] = Set.empty): InvoiceRequest = {
       require(offer.chains.contains(chain))
