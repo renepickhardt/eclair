@@ -19,6 +19,8 @@ package fr.acinq.eclair.blockchain.bitcoind
 import akka.actor.typed.eventstream.EventStream
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
+import fr.acinq.bitcoin
+import fr.acinq.bitcoin.Block
 import fr.acinq.bitcoin.scalacompat._
 import fr.acinq.eclair.blockchain.Monitoring.Metrics
 import fr.acinq.eclair.blockchain._
@@ -26,8 +28,10 @@ import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient
 import fr.acinq.eclair.blockchain.watchdogs.BlockchainWatchdog
 import fr.acinq.eclair.wire.protocol.ChannelAnnouncement
 import fr.acinq.eclair.{BlockHeight, KamonExt, NodeParams, RealShortChannelId, TimestampSecond}
+import org.json4s.JString
 
 import java.util.concurrent.atomic.AtomicLong
+import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success}
@@ -63,6 +67,9 @@ object ZmqWatcher {
   private case class PublishBlockHeight(current: BlockHeight) extends Command
   private case class ProcessNewBlock(blockHash: ByteVector32) extends Command
   private case class ProcessNewTransaction(tx: Transaction) extends Command
+  private case class StartIndexing(count: Int) extends Command
+  private case class IndexBlock(block: Block, count: Int) extends Command
+  private case class GetBlockFailed(t: Throwable) extends Command
 
   final case class ValidateRequest(replyTo: ActorRef[ValidateResult], ann: ChannelAnnouncement) extends Command
   final case class ValidateResult(c: ChannelAnnouncement, fundingTx: Either[Throwable, (Transaction, UtxoStatus)])
@@ -178,7 +185,9 @@ object ZmqWatcher {
         timers.startSingleTimer(TickNewBlock, 1 second)
         // we start a timer in case we don't receive ZMQ block events
         timers.startSingleTimer(TickBlockTimeout, blockTimeout)
-        new ZmqWatcher(nodeParams, blockCount, client, context, timers).watching(Set.empty[GenericWatch], Map.empty[OutPoint, Set[GenericWatch]])
+        context.self.tell(StartIndexing(10))
+
+        new ZmqWatcher(nodeParams, blockCount, client, context, timers).indexing(scala.collection.mutable.HashMap.empty[fr.acinq.bitcoin.OutPoint, fr.acinq.bitcoin.ByteVector32])
       }
     }
 
@@ -224,7 +233,42 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
 
   private val watchdog = context.spawn(Behaviors.supervise(BlockchainWatchdog(nodeParams, 150 seconds)).onFailure(SupervisorStrategy.resume), "blockchain-watchdog")
 
-  private def watching(watches: Set[GenericWatch], watchedUtxos: Map[OutPoint, Set[GenericWatch]]): Behavior[Command] = {
+  private def getbestblockhash = client.rpcClient.invoke("getbestblockhash").collect { case JString(b) => fr.acinq.bitcoin.ByteVector32.fromValidHex(b) }
+
+  private def getbestblock = getbestblockhash flatMap getblock
+
+  private def getblock(blockhash: fr.acinq.bitcoin.ByteVector32): Future[Block] = client.rpcClient.invoke("getblock", blockhash, 0).collect { case JString(b) => Block.read(b) }
+
+  private def indexing(index: mutable.Map[fr.acinq.bitcoin.OutPoint, fr.acinq.bitcoin.ByteVector32]): Behavior[Command] = Behaviors.withStash(50000) { stash =>
+    Behaviors.receiveMessagePartial {
+      case StartIndexing(count) =>
+        context.pipeToSelf(getbestblock) {
+          case Failure(t) => GetBlockFailed(t)
+          case Success(block) => IndexBlock(block, count)
+        }
+        Behaviors.same
+
+      case GetBlockFailed(t) =>
+        log.warn("cannot retrieve block", t)
+        stash.unstashAll(watching(index.toMap, Set.empty[GenericWatch], Map.empty[OutPoint, Set[GenericWatch]]))
+
+      case IndexBlock(block, count) =>
+        log.debug("indexing block {} count = {}", block.blockId, count)
+        block.tx.forEach((tx: bitcoin.Transaction) => tx.txIn.forEach((txIn: bitcoin.TxIn) => index.addOne(txIn.outPoint -> tx.txid)))
+        if (count == 1) {
+          stash.unstashAll(watching(index.toMap, Set.empty[GenericWatch], Map.empty[OutPoint, Set[GenericWatch]]))
+        }
+        else {
+          context.pipeToSelf(getblock(block.header.hashPreviousBlock.reversed())) {
+            case Failure(t) => GetBlockFailed(t)
+            case Success(block) => IndexBlock(block, count - 1)
+          }
+          Behaviors.same
+        }
+    }
+  }
+
+  private def watching(index: Map[fr.acinq.bitcoin.OutPoint, fr.acinq.bitcoin.ByteVector32], watches: Set[GenericWatch], watchedUtxos: Map[OutPoint, Set[GenericWatch]]): Behavior[Command] = {
     Behaviors.receiveMessage {
       case ProcessNewTransaction(tx) =>
         log.debug("analyzing txid={} tx={}", tx.txid, tx)
@@ -304,7 +348,7 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
               // They are never cleaned up but it is not a big deal for now (1 channel == 1 watch)
               Behaviors.same
             case _ =>
-              watching(watches - watch, removeWatchedUtxos(watchedUtxos, watch))
+              watching(index, watches - watch, removeWatchedUtxos(watchedUtxos, watch))
           }
         } else {
           Behaviors.same
@@ -317,10 +361,10 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
           case _ if watches.contains(w) =>
             Ignore // we ignore duplicates
           case w: WatchSpentBasic[_] =>
-            checkSpentBasic(w)
+            checkSpentBasic(index, w)
             Keep
           case w: WatchSpent[_] =>
-            checkSpent(w)
+            checkSpent(index, w)
             Keep
           case w: WatchConfirmed[_] =>
             checkConfirmed(w)
@@ -333,7 +377,7 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
           case Keep =>
             log.debug("adding watch {}", w)
             context.watchWith(w.replyTo, StopWatching(w.replyTo))
-            watching(watches + w, addWatchedUtxos(watchedUtxos, w))
+            watching(index, watches + w, addWatchedUtxos(watchedUtxos, w))
           case Ignore =>
             Behaviors.same
         }
@@ -342,7 +386,7 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
         // we remove watches associated to dead actors
         val deprecatedWatches = watches.filter(_.replyTo == origin)
         val watchedUtxos1 = deprecatedWatches.foldLeft(watchedUtxos) { case (m, w) => removeWatchedUtxos(m, w) }
-        watching(watches -- deprecatedWatches, watchedUtxos1)
+        watching(index, watches -- deprecatedWatches, watchedUtxos1)
 
       case ValidateRequest(replyTo, ann) =>
         client.validate(ann).map(replyTo ! _)
@@ -356,10 +400,15 @@ private class ZmqWatcher(nodeParams: NodeParams, blockHeight: AtomicLong, client
         r.replyTo ! watches
         Behaviors.same
 
+      case _: GetBlockFailed => Behaviors.same
+
+      case _: IndexBlock => Behaviors.same
+
+      case _: StartIndexing => Behaviors.same
     }
   }
 
-  private def checkSpentBasic(w: WatchSpentBasic[_ <: WatchSpentBasicTriggered]): Future[Unit] = {
+  private def checkSpentBasic(index: Map[OutPoint, ByteVector32], w: WatchSpentBasic[_ <: WatchSpentBasicTriggered]): Future[Unit] = {
     // NB: we assume parent tx was published, we just need to make sure this particular output has not been spent
     client.isTransactionOutputSpendable(w.txId, w.outputIndex, includeMempool = true).collect {
       case false =>
