@@ -9,13 +9,12 @@ import fr.acinq.eclair.channel._
 import fr.acinq.eclair.channel.fund.InteractiveTxSigningSession.UnsignedLocalCommit
 import fr.acinq.eclair.channel.fund.{InteractiveTxBuilder, InteractiveTxSigningSession}
 import fr.acinq.eclair.crypto.ShaChain
-import fr.acinq.eclair.MilliSatoshiLong
 import fr.acinq.eclair.transactions.Transactions._
 import fr.acinq.eclair.transactions.{CommitmentSpec, DirectedHtlc, IncomingHtlc, OutgoingHtlc}
 import fr.acinq.eclair.wire.protocol.CommonCodecs._
 import fr.acinq.eclair.wire.protocol.LightningMessageCodecs._
 import fr.acinq.eclair.wire.protocol.{TxSignatures, UpdateAddHtlc, UpdateMessage}
-import fr.acinq.eclair.{BlockHeight, FeatureSupport, Features, PermanentChannelFeature, channel}
+import fr.acinq.eclair.{BlockHeight, FeatureSupport, Features, MilliSatoshiLong, PermanentChannelFeature, channel}
 import scodec.bits.{BitVector, ByteVector}
 import scodec.codecs._
 import scodec.{Attempt, Codec}
@@ -352,18 +351,28 @@ private[channel] object ChannelCodecs4 {
       .typecase(0x01, partiallySignedSharedTransactionCodec)
       .typecase(0x02, fullySignedSharedTransactionCodec)
 
+    private val dualFundedUnconfirmedFundingTxWithoutCommitIndexCodec: Codec[DualFundedUnconfirmedFundingTx] = (
+      ("sharedTx" | signedSharedTransactionCodec) ::
+        ("createdAt" | blockHeight) ::
+        ("fundingParams" | fundingParamsCodec) ::
+        provide(Option.empty[Long])).as[DualFundedUnconfirmedFundingTx]
+
     private val dualFundedUnconfirmedFundingTxCodec: Codec[DualFundedUnconfirmedFundingTx] = (
       ("sharedTx" | signedSharedTransactionCodec) ::
         ("createdAt" | blockHeight) ::
-        ("fundingParams" | fundingParamsCodec)).as[DualFundedUnconfirmedFundingTx]
+        ("fundingParams" | fundingParamsCodec) ::
+        ("commitIndex" | optional(bool8, uint64overflow))).as[DualFundedUnconfirmedFundingTx]
 
     val fundingTxStatusCodec: Codec[LocalFundingStatus] = discriminated[LocalFundingStatus].by(uint8)
       .typecase(0x01, optional(bool8, txCodec).as[SingleFundedUnconfirmedFundingTx])
-      .typecase(0x02, dualFundedUnconfirmedFundingTxCodec)
-      .typecase(0x05, (txCodec :: optional(bool8, lengthDelimited(txSignaturesCodec))).as[ZeroconfPublishedFundingTx])
-      .typecase(0x06, (txCodec :: optional(bool8, lengthDelimited(txSignaturesCodec))).as[ConfirmedFundingTx])
-      .typecase(0x03, (txCodec :: provide(Option.empty[TxSignatures])).as[ZeroconfPublishedFundingTx])
-      .typecase(0x04, (txCodec :: provide(Option.empty[TxSignatures])).as[ConfirmedFundingTx])
+      .typecase(0x07, dualFundedUnconfirmedFundingTxCodec)
+      .typecase(0x08, (txCodec :: optional(bool8, lengthDelimited(txSignaturesCodec)) :: optional(bool8, uint64overflow)).as[ZeroconfPublishedFundingTx])
+      .typecase(0x09, (txCodec :: optional(bool8, lengthDelimited(txSignaturesCodec)) :: optional(bool8, uint64overflow)).as[ConfirmedFundingTx])
+      .typecase(0x02, dualFundedUnconfirmedFundingTxWithoutCommitIndexCodec)
+      .typecase(0x05, (txCodec :: optional(bool8, lengthDelimited(txSignaturesCodec)) :: provide(Option.empty[Long])).as[ZeroconfPublishedFundingTx])
+      .typecase(0x06, (txCodec :: optional(bool8, lengthDelimited(txSignaturesCodec)) :: provide(Option.empty[Long])).as[ConfirmedFundingTx])
+      .typecase(0x03, (txCodec :: provide(Option.empty[TxSignatures]) :: provide(Option.empty[Long])).as[ZeroconfPublishedFundingTx])
+      .typecase(0x04, (txCodec :: provide(Option.empty[TxSignatures]) :: provide(Option.empty[Long])).as[ConfirmedFundingTx])
 
     val remoteFundingStatusCodec: Codec[RemoteFundingStatus] = discriminated[RemoteFundingStatus].by(uint8)
       .typecase(0x01, provide(RemoteFundingStatus.NotLocked))
