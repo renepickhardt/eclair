@@ -592,6 +592,18 @@ private[channel] object ChannelCodecs4 {
         ("closingTxProposed" | listOfN(uint16, listOfN(uint16, lengthDelimited(closingTxProposedCodec)))) ::
         ("bestUnpublishedClosingTx_opt" | optional(bool8, closingTxCodec))).as[DATA_NEGOTIATING]
 
+    private val closingTxsCodec: Codec[ClosingTxs] = (
+      ("localAndRemote_opt" | optional(bool8, closingTxCodec)) ::
+        ("localOnly_opt" | optional(bool8, closingTxCodec)) ::
+        ("remoteOnly_opt" | optional(bool8, closingTxCodec))).as[ClosingTxs]
+
+    val DATA_NEGOTIATING_SIMPLE_0a_Codec: Codec[DATA_NEGOTIATING_SIMPLE] = (
+      ("commitments" | commitmentsCodec) ::
+        ("localShutdown" | lengthDelimited(shutdownCodec)) ::
+        ("remoteShutdown" | lengthDelimited(shutdownCodec)) ::
+        ("proposedClosingTxs" | listOfN(uint16, closingTxsCodec)) ::
+        ("publishedClosingTxs" | listOfN(uint16, closingTxCodec))).as[DATA_NEGOTIATING_SIMPLE]
+
     val DATA_CLOSING_07_Codec: Codec[DATA_CLOSING] = (
       ("commitments" | commitmentsCodec) ::
         ("waitingSince" | blockHeight) ::
@@ -611,6 +623,7 @@ private[channel] object ChannelCodecs4 {
 
   // Order matters!
   val channelDataCodec: Codec[PersistentChannelData] = discriminated[PersistentChannelData].by(uint16)
+    .typecase(0x0a, Codecs.DATA_NEGOTIATING_SIMPLE_0a_Codec)
     .typecase(0x09, Codecs.DATA_WAIT_FOR_DUAL_FUNDING_SIGNED_09_Codec)
     .typecase(0x08, Codecs.DATA_WAIT_FOR_REMOTE_PUBLISH_FUTURE_COMMITMENT_08_Codec)
     .typecase(0x07, Codecs.DATA_CLOSING_07_Codec)
