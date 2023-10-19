@@ -31,7 +31,7 @@ import fr.acinq.eclair.crypto.ShaChain
 import fr.acinq.eclair.io.Peer.OpenChannelResponse
 import fr.acinq.eclair.transactions.Transactions.TxOwner
 import fr.acinq.eclair.transactions.{Scripts, Transactions}
-import fr.acinq.eclair.wire.protocol.{AcceptChannel, AnnouncementSignatures, ChannelReady, ChannelTlv, Error, FundingCreated, FundingSigned, OpenChannel, TlvStream}
+import fr.acinq.eclair.wire.protocol.{AcceptChannel, AcceptChannelTlv, AcceptDualFundedChannelTlv, AnnouncementSignatures, ChannelReady, ChannelTlv, Error, FundingCreated, FundingSigned, OpenChannel, OpenChannelTlv, OpenDualFundedChannelTlv, TaprootTlv, TlvStream}
 import fr.acinq.eclair.{Features, MilliSatoshiLong, RealShortChannelId, UInt64, randomKey, toLongId}
 import scodec.bits.ByteVector
 
@@ -133,6 +133,15 @@ trait ChannelOpenSingleFunded extends SingleFundingHandlers with ErrorHandlers {
           // In order to allow TLV extensions and keep backwards-compatibility, we include an empty upfront_shutdown_script if this feature is not used.
           // See https://github.com/lightningnetwork/lightning-rfc/pull/714.
           val localShutdownScript = d.initFundee.localParams.upfrontShutdownScript_opt.getOrElse(ByteVector.empty)
+          var tlvStream: TlvStream[AcceptChannelTlv] = TlvStream(
+            ChannelTlv.UpfrontShutdownScriptTlv(localShutdownScript),
+            ChannelTlv.ChannelTypeTlv(d.initFundee.channelType)
+          )
+          if (params.commitmentFormat == Transactions.SimpleTaprootChannelsCommitmentFormat) {
+            val secnonce = keyManager.secretNonce(channelKeyPath, 0)
+            val pubnonce = secnonce.publicNonce()
+            tlvStream = tlvStream.copy(records = tlvStream.records + TaprootTlv.NextLocalNonce(pubnonce))
+          }
           val accept = AcceptChannel(temporaryChannelId = open.temporaryChannelId,
             dustLimitSatoshis = d.initFundee.localParams.dustLimit,
             maxHtlcValueInFlightMsat = UInt64(d.initFundee.localParams.maxHtlcValueInFlightMsat.toLong),
@@ -147,10 +156,7 @@ trait ChannelOpenSingleFunded extends SingleFundingHandlers with ErrorHandlers {
             delayedPaymentBasepoint = keyManager.delayedPaymentPoint(channelKeyPath).publicKey,
             htlcBasepoint = keyManager.htlcPoint(channelKeyPath).publicKey,
             firstPerCommitmentPoint = keyManager.commitmentPoint(channelKeyPath, 0),
-            tlvStream = TlvStream(
-              ChannelTlv.UpfrontShutdownScriptTlv(localShutdownScript),
-              ChannelTlv.ChannelTypeTlv(d.initFundee.channelType)
-            ))
+            tlvStream = tlvStream)
           goto(WAIT_FOR_FUNDING_CREATED) using DATA_WAIT_FOR_FUNDING_CREATED(params, open.fundingSatoshis, open.pushMsat, open.feeratePerKw, open.fundingPubkey, open.firstPerCommitmentPoint) sending accept
       }
 

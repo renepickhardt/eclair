@@ -19,7 +19,8 @@ package fr.acinq.eclair.channel
 import akka.event.{DiagnosticLoggingAdapter, LoggingAdapter}
 import com.softwaremill.quicklens.ModifyPimp
 import fr.acinq.bitcoin.ScriptFlags
-import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey, sha256}
+import fr.acinq.bitcoin.musig2.Musig2
+import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey, XonlyPublicKey, sha256}
 import fr.acinq.bitcoin.scalacompat.Script._
 import fr.acinq.bitcoin.scalacompat._
 import fr.acinq.eclair._
@@ -38,6 +39,7 @@ import fr.acinq.eclair.transactions._
 import fr.acinq.eclair.wire.protocol._
 import scodec.bits.ByteVector
 
+import java.util
 import scala.concurrent.duration._
 import scala.util.{Failure, Success, Try}
 
@@ -352,10 +354,28 @@ object Helpers {
 
   object Funding {
 
-    def makeFundingInputInfo(fundingTxId: TxId, fundingTxOutputIndex: Int, fundingSatoshis: Satoshi, fundingPubkey1: PublicKey, fundingPubkey2: PublicKey): InputInfo = {
-      val fundingScript = multiSig2of2(fundingPubkey1, fundingPubkey2)
-      val fundingTxOut = TxOut(fundingSatoshis, pay2wsh(fundingScript))
-      InputInfo(OutPoint(fundingTxId, fundingTxOutputIndex), fundingTxOut, write(fundingScript))
+    def makeFundingInputInfo(fundingTxId: TxId, fundingTxOutputIndex: Int, fundingSatoshis: Satoshi, fundingPubkey1: PublicKey, fundingPubkey2: PublicKey): InputInfo
+    = makeFundingInputInfo(DefaultCommitmentFormat, fundingTxId, fundingTxOutputIndex, fundingSatoshis, fundingPubkey1, fundingPubkey2)
+
+    def makeFundingInputInfo(commitmentFormat: CommitmentFormat, fundingTxId: TxId, fundingTxOutputIndex: Int, fundingSatoshis: Satoshi, fundingPubkey1: PublicKey, fundingPubkey2: PublicKey): InputInfo = {
+      import KotlinUtils._
+      commitmentFormat match {
+        case SimpleTaprootChannelsCommitmentFormat =>
+          println(s"funding keys $fundingPubkey1 $fundingPubkey2")
+          // use musig2 to combine public keys
+          val internalKey = Musig2.keyAgg(Musig2.keySort(util.List.of(fundingPubkey1, fundingPubkey2)))
+          println(s"internal key $internalKey")
+          // and use a BIP86 tweak to get the output key
+          val outputKey = internalKey.getQ.xOnly().outputKey(fr.acinq.bitcoin.Crypto.TaprootTweak.NoScriptTweak.INSTANCE).getFirst
+          println(s"output key $outputKey")
+          val fundingScript = Script.pay2tr(XonlyPublicKey(outputKey))
+          val fundingTxOut = TxOut(fundingSatoshis, fundingScript)
+          InputInfo(OutPoint(fundingTxId, fundingTxOutputIndex), fundingTxOut, write(fundingScript))
+        case _ =>
+          val fundingScript = multiSig2of2(fundingPubkey1, fundingPubkey2)
+          val fundingTxOut = TxOut(fundingSatoshis, pay2wsh(fundingScript))
+          InputInfo(OutPoint(fundingTxId, fundingTxOutputIndex), fundingTxOut, write(fundingScript))
+      }
     }
 
     /**
@@ -418,7 +438,7 @@ object Helpers {
 
       val fundingPubKey = keyManager.fundingPublicKey(localParams.fundingKeyPath, fundingTxIndex)
       val channelKeyPath = keyManager.keyPath(localParams, channelConfig)
-      val commitmentInput = makeFundingInputInfo(fundingTxId, fundingTxOutputIndex, fundingAmount, fundingPubKey.publicKey, remoteFundingPubKey)
+      val commitmentInput = makeFundingInputInfo(channelFeatures.commitmentFormat, fundingTxId, fundingTxOutputIndex, fundingAmount, fundingPubKey.publicKey, remoteFundingPubKey)
       val localPerCommitmentPoint = keyManager.commitmentPoint(channelKeyPath, localCommitmentIndex)
       val (localCommitTx, _) = Commitment.makeLocalTxs(keyManager, channelConfig, channelFeatures, localCommitmentIndex, localParams, remoteParams, fundingTxIndex, remoteFundingPubKey, commitmentInput, localPerCommitmentPoint, localSpec)
       val (remoteCommitTx, htlcTxs) = Commitment.makeRemoteTxs(keyManager, channelConfig, channelFeatures, remoteCommitmentIndex, localParams, remoteParams, fundingTxIndex, remoteFundingPubKey, commitmentInput, remotePerCommitmentPoint, remoteSpec)

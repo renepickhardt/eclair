@@ -189,6 +189,11 @@
         </dependency>
         <!-- BITCOIN -->
         <dependency>
+            <groupId>fr.acinq.bitcoin</groupId>
+            <artifactId>bitcoin-kmp-jvm</artifactId>
+            <version>0.15.0-MUSIG2-SNAPSHOT</version>
+        </dependency>
+        <dependency>
             <groupId>fr.acinq</groupId>
             <artifactId>bitcoin-lib_${scala.version.short}</artifactId>
             <version>${bitcoinlib.version}</version>

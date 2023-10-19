@@ -16,6 +16,7 @@
 
 package fr.acinq.eclair.crypto.keymanager
 
+import fr.acinq.bitcoin.musig2.SecretNonce
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey}
 import fr.acinq.bitcoin.scalacompat.DeterministicWallet.ExtendedPublicKey
 import fr.acinq.bitcoin.scalacompat.{ByteVector64, Crypto, DeterministicWallet, Protocol}
@@ -40,6 +41,8 @@ trait ChannelKeyManager {
   def commitmentSecret(channelKeyPath: DeterministicWallet.KeyPath, index: Long): Crypto.PrivateKey
 
   def commitmentPoint(channelKeyPath: DeterministicWallet.KeyPath, index: Long): Crypto.PublicKey
+
+  def secretNonce(channelKeyPath: DeterministicWallet.KeyPath, index: Long): SecretNonce
 
   def keyPath(localParams: LocalParams, channelConfig: ChannelConfig): DeterministicWallet.KeyPath = {
     if (channelConfig.hasOption(ChannelConfig.FundingPubKeyBasedChannelKeyPath)) {

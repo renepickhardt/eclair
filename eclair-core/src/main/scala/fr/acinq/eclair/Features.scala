@@ -306,6 +306,11 @@ object Features {
     val mandatory = 154
   }
 
+  case object SimpleTaprootChannelsStaging extends Feature with InitFeature with NodeFeature with ChannelTypeFeature {
+    val rfcName = "option_simple_taproot_staging"
+    val mandatory = 180
+  }
+
   val knownFeatures: Set[Feature] = Set(
     DataLossProtect,
     InitialRoutingSync,
@@ -332,6 +337,7 @@ object Features {
     TrampolinePaymentPrototype,
     AsyncPaymentPrototype,
     SplicePrototype,
+    SimpleTaprootChannelsStaging
   )
 
   // Features may depend on other features, as specified in Bolt 9.
@@ -344,7 +350,8 @@ object Features {
     RouteBlinding -> (VariableLengthOnion :: Nil),
     TrampolinePaymentPrototype -> (PaymentSecret :: Nil),
     KeySend -> (VariableLengthOnion :: Nil),
-    AsyncPaymentPrototype -> (TrampolinePaymentPrototype :: Nil)
+    AsyncPaymentPrototype -> (TrampolinePaymentPrototype :: Nil),
+    SimpleTaprootChannelsStaging -> (AnchorOutputsZeroFeeHtlcTx :: Nil)
   )
 
   case class FeatureException(message: String) extends IllegalArgumentException(message)

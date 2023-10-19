@@ -16,7 +16,9 @@
 
 package fr.acinq.eclair.wire.protocol
 
-import fr.acinq.bitcoin.scalacompat.{Satoshi, TxId}
+import fr.acinq.bitcoin.musig2.PublicNonce
+import fr.acinq.bitcoin.scalacompat.Crypto.PublicKey
+import fr.acinq.bitcoin.scalacompat.{ByteVector32, Satoshi, TxId}
 import fr.acinq.eclair.channel.{ChannelType, ChannelTypes}
 import fr.acinq.eclair.wire.protocol.CommonCodecs._
 import fr.acinq.eclair.wire.protocol.TlvCodecs.{tlvField, tlvStream, tmillisatoshi}
@@ -24,10 +26,13 @@ import fr.acinq.eclair.{Alias, FeatureSupport, Features, MilliSatoshi, UInt64}
 import scodec.Codec
 import scodec.bits.ByteVector
 import scodec.codecs._
+import shapeless.HNil
 
 sealed trait OpenChannelTlv extends Tlv
 
 sealed trait AcceptChannelTlv extends Tlv
+
+sealed trait ChannelCreatedTlv extends Tlv
 
 sealed trait OpenDualFundedChannelTlv extends Tlv
 
@@ -73,6 +78,7 @@ object OpenChannelTlv {
   val openTlvCodec: Codec[TlvStream[OpenChannelTlv]] = tlvStream(discriminated[OpenChannelTlv].by(varint)
     .typecase(UInt64(0), upfrontShutdownScriptCodec)
     .typecase(UInt64(1), channelTypeCodec)
+    .typecase(UInt64(4), TaprootTlv.nexLocalNonceCodec)
   )
 
 }
@@ -84,6 +90,7 @@ object AcceptChannelTlv {
   val acceptTlvCodec: Codec[TlvStream[AcceptChannelTlv]] = tlvStream(discriminated[AcceptChannelTlv].by(varint)
     .typecase(UInt64(0), upfrontShutdownScriptCodec)
     .typecase(UInt64(1), channelTypeCodec)
+    .typecase(UInt64(4), TaprootTlv.nexLocalNonceCodec)
   )
 }
 
@@ -139,7 +146,9 @@ object AcceptDualFundedChannelTlv {
 sealed trait FundingCreatedTlv extends Tlv
 
 object FundingCreatedTlv {
-  val fundingCreatedTlvCodec: Codec[TlvStream[FundingCreatedTlv]] = tlvStream(discriminated[FundingCreatedTlv].by(varint))
+  val fundingCreatedTlvCodec: Codec[TlvStream[FundingCreatedTlv]] = tlvStream(discriminated[FundingCreatedTlv].by(varint)
+    .typecase(UInt64(2), TaprootTlv.partialSignatureWithNonceCodec)
+  )
 }
 
 sealed trait FundingSignedTlv extends Tlv
@@ -200,4 +209,26 @@ object ClosingSignedTlv {
     .typecase(UInt64(1), feeRange)
   )
 
+}
+
+object TaprootTlv {
+
+  import fr.acinq.bitcoin.scalacompat.KotlinUtils
+
+  case class NextLocalNonce(publicNonce: PublicNonce) extends OpenChannelTlv with AcceptChannelTlv
+
+  val publicNonceCodec: Codec[PublicNonce] = (("p1" | publicKey) :: ("p2" | publicKey)).as[(PublicKey, PublicKey)].xmap[PublicNonce](
+    { case (p1, p2) => new PublicNonce(KotlinUtils.scala2kmp(p1), KotlinUtils.scala2kmp(p2)) },
+    { pnonce => (KotlinUtils.kmp2scala(pnonce.getP1), KotlinUtils.kmp2scala(pnonce.getP2)) })
+  
+  val nexLocalNonceCodec: Codec[NextLocalNonce] = tlvField(publicNonceCodec)
+
+  case class PartialSignatureWithNonce(partialSig: ByteVector32, publicNonce: PublicNonce) extends FundingCreatedTlv
+
+  val partialSignatureWithNonceCodecInternal: Codec[PartialSignatureWithNonce] = (("psig" | bytes32) :: ("pnonce" | publicNonceCodec)).as[(ByteVector32, PublicNonce)].xmap[PartialSignatureWithNonce](
+    { case (ps, pn) => PartialSignatureWithNonce(ps, pn) },
+    { psigwithnonce => (psigwithnonce.partialSig, psigwithnonce.publicNonce) }
+  )
+
+  val partialSignatureWithNonceCodec: Codec[PartialSignatureWithNonce] = tlvField(partialSignatureWithNonceCodecInternal)
 }

@@ -17,6 +17,7 @@
 package fr.acinq.eclair.crypto.keymanager
 
 import com.google.common.cache.{CacheBuilder, CacheLoader, LoadingCache}
+import fr.acinq.bitcoin.musig2.{Musig2, SecretNonce}
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey}
 import fr.acinq.bitcoin.scalacompat.DeterministicWallet._
 import fr.acinq.bitcoin.scalacompat.{Block, BlockHash, ByteVector32, ByteVector64, Crypto, DeterministicWallet}
@@ -99,6 +100,16 @@ class LocalChannelKeyManager(seed: ByteVector, chainHash: BlockHash) extends Cha
   override def commitmentSecret(channelKeyPath: DeterministicWallet.KeyPath, index: Long): PrivateKey = Generators.perCommitSecret(shaSeed(channelKeyPath), index)
 
   override def commitmentPoint(channelKeyPath: DeterministicWallet.KeyPath, index: Long): PublicKey = Generators.perCommitPoint(shaSeed(channelKeyPath), index)
+
+  override def secretNonce(channelKeyPath: KeyPath, index: Long): SecretNonce = {
+    // FIXME!!
+    import fr.acinq.bitcoin.scalacompat.KotlinUtils._
+    SecretNonce.generate(
+      commitmentSecret(channelKeyPath, index),
+      commitmentPoint(channelKeyPath, index),
+      null, null, null, commitmentSecret(channelKeyPath, index).value
+    )
+  }
 
   /**
    * @param tx               input transaction

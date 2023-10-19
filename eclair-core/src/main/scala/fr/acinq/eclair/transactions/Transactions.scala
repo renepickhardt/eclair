@@ -92,6 +92,9 @@ object Transactions {
    */
   case object ZeroFeeHtlcTxAnchorOutputsCommitmentFormat extends AnchorOutputsCommitmentFormat
 
+  case object SimpleTaprootChannelsCommitmentFormat extends AnchorOutputsCommitmentFormat
+
+
   // @formatter:off
   case class OutputInfo(index: Long, amount: Satoshi, publicKeyScript: ByteVector)
   case class InputInfo(outPoint: OutPoint, txOut: TxOut, redeemScript: ByteVector)
@@ -414,6 +417,11 @@ object Transactions {
 
     if (toRemoteAmount >= localDustLimit) {
       commitmentFormat match {
+        case SimpleTaprootChannelsCommitmentFormat =>
+          outputs.append(CommitmentOutputLink(
+            TxOut(toRemoteAmount, pay2wsh(toRemoteDelayed(remotePaymentPubkey))),
+            toRemoteDelayed(remotePaymentPubkey),
+            ToRemote))
         case DefaultCommitmentFormat => outputs.append(CommitmentOutputLink(
           TxOut(toRemoteAmount, pay2wpkh(remotePaymentPubkey)),
           pay2pkh(remotePaymentPubkey),

@@ -16,10 +16,13 @@
 
 package fr.acinq.eclair.transactions
 
+import fr.acinq.bitcoin.Crypto.TaprootTweak
+import fr.acinq.bitcoin.{ScriptFlags, ScriptLeaf, ScriptTree, SigVersion}
 import fr.acinq.bitcoin.SigHash._
-import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, ripemd160, sha256}
+import fr.acinq.bitcoin.musig2.{Musig2, PublicNonce, SecretNonce, SessionCtx}
+import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey, XonlyPublicKey, ripemd160, sha256}
 import fr.acinq.bitcoin.scalacompat.Script.{pay2wpkh, pay2wsh, write}
-import fr.acinq.bitcoin.scalacompat.{Btc, ByteVector32, Crypto, MilliBtc, MilliBtcDouble, OutPoint, Protocol, Satoshi, SatoshiLong, Script, ScriptWitness, Transaction, TxId, TxIn, TxOut, millibtc2satoshi}
+import fr.acinq.bitcoin.scalacompat.{Btc, ByteVector32, Crypto, MilliBtc, MilliBtcDouble, OP_1, OP_PUSHDATA, OutPoint, Protocol, Satoshi, SatoshiLong, Script, ScriptWitness, Transaction, TxId, TxIn, TxOut, millibtc2satoshi}
 import fr.acinq.eclair.TestUtils.randomTxId
 import fr.acinq.eclair._
 import fr.acinq.eclair.blockchain.fee.{ConfirmationTarget, FeeratePerKw}
@@ -30,6 +33,7 @@ import fr.acinq.eclair.transactions.Transactions.AnchorOutputsCommitmentFormat.a
 import fr.acinq.eclair.transactions.Transactions._
 import fr.acinq.eclair.wire.protocol.UpdateAddHtlc
 import grizzled.slf4j.Logging
+import kotlin.Pair
 import org.scalatest.funsuite.AnyFunSuite
 import scodec.bits._
 
@@ -911,5 +915,68 @@ class TransactionsSpec extends AnyFunSuite with Logging {
       assert(fee == test.expectedFee)
     })
   }
+
+  test("simple taproot channels tests") {
+    import fr.acinq.bitcoin.scalacompat.KotlinUtils._
+    val numsPoint = PublicKey(ByteVector.fromValidHex("02dca094751109d0bd055d03565874e8276dd53e926b44e3bd1bb6bf4bc130a279"), checkValid = true)
+
+    object Local {
+      val fundingPriv = PrivateKey(ByteVector.fromValidHex("01" * 32))
+    }
+
+    object Remote {
+      val fundingPriv = PrivateKey(ByteVector.fromValidHex("02" * 32))
+      val paymentPriv = PrivateKey(ByteVector.fromValidHex("03" * 32))
+    }
+
+    val fundingSatoshis = Satoshi(10000)
+    val internalKey = Musig2.keyAgg(java.util.List.of(Local.fundingPriv.publicKey, Remote.fundingPriv.publicKey)).getQ
+    val outputFundingKey = internalKey.xOnly().outputKey(TaprootTweak.NoScriptTweak.INSTANCE).getFirst
+
+    val fundingTxOut = {
+      val fundingScript = Script.pay2tr(XonlyPublicKey(outputFundingKey))
+      TxOut(fundingSatoshis, fundingScript)
+    }
+    val fundingTx = Transaction(2, Nil, fundingTxOut :: Nil, 0)
+
+    // to-remote output
+    val toRemoteOutput = {
+      val toRemoteScript = Scripts.toRemoteDelayed(Remote.paymentPriv.publicKey)
+      val scriptTree = new ScriptTree.Leaf(new ScriptLeaf(0, Script.write(toRemoteScript), fr.acinq.bitcoin.Script.TAPROOT_LEAF_TAPSCRIPT))
+      val merkleRoot = ScriptTree.hash(scriptTree)
+      // we choose a pubkey that does not have a corresponding private key: our funding tx can only be spent through the script path, not the key path
+      val (tweakedKey, parity) = numsPoint.xOnly.outputKey(new TaprootTweak.ScriptTweak(merkleRoot))
+      TxOut(Satoshi(1000), OP_1 :: OP_PUSHDATA(tweakedKey) :: Nil)
+    }
+
+    val commitTx = Transaction(2,
+      TxIn(OutPoint(fundingTx, 0), ByteVector.empty, sequence = 1) :: Nil,
+      toRemoteOutput :: Nil,
+      lockTime = 0)
+
+    val signedCommitTx = {
+      val localNonce = SecretNonce.generate(Local.fundingPriv, Local.fundingPriv.publicKey, outputFundingKey, null, null, randomBytes32())
+      val remoteNonce = SecretNonce.generate(Remote.fundingPriv, Remote.fundingPriv.publicKey, outputFundingKey, null, null, randomBytes32())
+      val aggnonce = PublicNonce.aggregate(java.util.List.of(localNonce.publicNonce(), remoteNonce.publicNonce()))
+      val txHash = Transaction.hashForSigningSchnorr(commitTx, 0, fundingTx.txOut(0) :: Nil, SIGHASH_DEFAULT, SigVersion.SIGVERSION_TAPROOT)
+      val ctx = new SessionCtx(
+        aggnonce,
+        java.util.List.of(Local.fundingPriv.publicKey, Remote.fundingPriv.publicKey),
+        java.util.List.of(new Pair(internalKey.xOnly().tweak(TaprootTweak.NoScriptTweak.INSTANCE), java.lang.Boolean.TRUE)),
+        txHash
+      )
+      val localSig = ctx.sign(localNonce, Local.fundingPriv)
+      assert(ctx.partialSigVerify(localSig, localNonce.publicNonce(), Local.fundingPriv.publicKey))
+
+      val remoteSig = ctx.sign(remoteNonce, Remote.fundingPriv)
+      assert(ctx.partialSigVerify(remoteSig, remoteNonce.publicNonce(), Remote.fundingPriv.publicKey))
+
+      val combinedSig = ctx.partialSigAgg(java.util.List.of(localSig, remoteSig))
+      commitTx.updateWitness(0, ScriptWitness(combinedSig :: Nil))
+    }
+
+    Transaction.correctlySpends(signedCommitTx, Seq(fundingTx), ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
+  }
+
 
 }
