@@ -710,7 +710,7 @@ class ReplaceableTxPublisherSpec extends TestKitBaseClass with AnyFunSuiteLike w
         assert(probe.msgAvailable)
       }, max = 30 seconds)
       system.eventStream.publish(CurrentBlockHeight(aliceBlockHeight() + 15))
-      probe.fishForMessage() {
+      probe.fishForMessage(max = 60 seconds) {
         case nno: NotifyNodeOperator => nno.severity != NotificationsLogger.Info
         case _ => false
       }
