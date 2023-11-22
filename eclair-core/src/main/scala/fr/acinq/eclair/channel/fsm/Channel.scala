@@ -175,6 +175,10 @@ object Channel {
   /** We don't immediately process [[CurrentBlockHeight]] to avoid herd effects */
   case class ProcessCurrentBlockHeight(c: CurrentBlockHeight)
 
+  case class ReceiveTxInitRbf(txInitRbf: TxInitRbf, addFunding_opt: Option[LiquidityAds.AddFunding])
+
+  case class ReceiveSpliceInit(spliceInit: SpliceInit, addFunding_opt: Option[LiquidityAds.AddFunding])
+
   // @formatter:off
   /** What do we do if we have a local unhandled exception. */
   sealed trait UnhandledExceptionStrategy
@@ -928,7 +932,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
 
     case Event(_: QuiescenceTimeout, d: DATA_NORMAL) => handleQuiescenceTimeout(d)
 
-    case Event(msg: SpliceInit, d: DATA_NORMAL) =>
+    case Event(ReceiveSpliceInit(msg, addFunding_opt), d: DATA_NORMAL) =>
       d.spliceStatus match {
         case SpliceStatus.NoSplice | SpliceStatus.NonInitiatorQuiescent =>
           if (!d.commitments.isQuiescent) {
@@ -940,11 +944,14 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
           } else {
             log.info(s"accepting splice with remote.in.amount=${msg.fundingContribution} remote.in.push=${msg.pushAmount}")
             val parentCommitment = d.commitments.latest.commitment
+            val localFundingPubKey = nodeParams.channelKeyManager.fundingPublicKey(d.commitments.params.localParams.fundingKeyPath, parentCommitment.fundingTxIndex + 1).publicKey
+            val liquidityLease_opt = addFunding_opt.flatMap(_.signLease(nodeParams.privateKey, localFundingPubKey, msg.feerate, msg.requestFunds_opt))
             val spliceAck = SpliceAck(d.channelId,
-              fundingContribution = 0.sat, // only remote contributes to the splice
-              fundingPubKey = keyManager.fundingPublicKey(d.commitments.params.localParams.fundingKeyPath, parentCommitment.fundingTxIndex + 1).publicKey,
+              fundingContribution = addFunding_opt.map(_.fundingAmount).getOrElse(0.sat),
+              fundingPubKey = localFundingPubKey,
               pushAmount = 0.msat,
-              requireConfirmedInputs = nodeParams.channelConf.requireConfirmedInputsForDualFunding
+              addFunding_opt = liquidityLease_opt.map { case (willFund, _) => willFund },
+              requireConfirmedInputs = nodeParams.channelConf.requireConfirmedInputsForDualFunding,
             )
             val fundingParams = InteractiveTxParams(
               channelId = d.channelId,
@@ -966,6 +973,7 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
               channelParams = d.commitments.params,
               purpose = InteractiveTxBuilder.SpliceTx(parentCommitment),
               localPushAmount = spliceAck.pushAmount, remotePushAmount = msg.pushAmount,
+              liquidityPurchased_opt = liquidityLease_opt.map { case (_, lease) => LiquidityPurchased(isBuyer = false, lease) },
               wallet
             ))
             txBuilder ! InteractiveTxBuilder.Start(self)
@@ -997,17 +1005,25 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
             targetFeerate = spliceInit.feerate,
             requireConfirmedInputs = RequireConfirmedInputs(forLocal = msg.requireConfirmedInputs, forRemote = spliceInit.requireConfirmedInputs)
           )
-          val sessionId = randomBytes32()
-          val txBuilder = context.spawnAnonymous(InteractiveTxBuilder(
-            sessionId,
-            nodeParams, fundingParams,
-            channelParams = d.commitments.params,
-            purpose = InteractiveTxBuilder.SpliceTx(parentCommitment),
-            localPushAmount = cmd.pushAmount, remotePushAmount = msg.pushAmount,
-            wallet
-          ))
-          txBuilder ! InteractiveTxBuilder.Start(self)
-          stay() using d.copy(spliceStatus = SpliceStatus.SpliceInProgress(cmd_opt = Some(cmd), sessionId, txBuilder, remoteCommitSig = None))
+          LiquidityAds.validateLeaseRates_opt(remoteNodeId, d.channelId, msg.fundingPubKey, msg.fundingContribution, spliceInit.feerate, msg.willFund_opt, cmd.requestRemoteFunding_opt) match {
+            case Left(error) =>
+              log.info("rejecting splice attempt: invalid lease rates")
+              cmd.replyTo ! RES_FAILURE(cmd, error)
+              stay() using d.copy(spliceStatus = SpliceStatus.SpliceAborted) sending TxAbort(d.channelId, error.getMessage)
+            case Right(lease_opt) =>
+              val sessionId = randomBytes32()
+              val txBuilder = context.spawnAnonymous(InteractiveTxBuilder(
+                sessionId,
+                nodeParams, fundingParams,
+                channelParams = d.commitments.params,
+                purpose = InteractiveTxBuilder.SpliceTx(parentCommitment),
+                localPushAmount = cmd.pushAmount, remotePushAmount = msg.pushAmount,
+                liquidityPurchased_opt = lease_opt.map(lease => LiquidityPurchased(isBuyer = true, lease)),
+                wallet
+              ))
+              txBuilder ! InteractiveTxBuilder.Start(self)
+              stay() using d.copy(spliceStatus = SpliceStatus.SpliceInProgress(cmd_opt = Some(cmd), sessionId, txBuilder, remoteCommitSig = None))
+          }
         case _ =>
           log.info(s"ignoring unexpected splice_ack=$msg")
           stay()
@@ -2709,7 +2725,8 @@ class Channel(val nodeParams: NodeParams, val wallet: OnChainChannelFunder with 
           feerate = targetFeerate,
           fundingPubKey = keyManager.fundingPublicKey(d.commitments.params.localParams.fundingKeyPath, parentCommitment.fundingTxIndex + 1).publicKey,
           pushAmount = cmd.pushAmount,
-          requireConfirmedInputs = nodeParams.channelConf.requireConfirmedInputsForDualFunding
+          requestFunding_opt = cmd.requestRemoteFunding_opt.map(_.requestFunds),
+          requireConfirmedInputs = nodeParams.channelConf.requireConfirmedInputsForDualFunding,
         )
         Right(spliceInit)
       }

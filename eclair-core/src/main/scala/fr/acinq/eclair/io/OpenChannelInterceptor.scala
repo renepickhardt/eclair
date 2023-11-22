@@ -31,7 +31,7 @@ import fr.acinq.eclair.io.Peer.{OpenChannelResponse, SpawnChannelNonInitiator}
 import fr.acinq.eclair.io.PendingChannelsRateLimiter.AddOrRejectChannel
 import fr.acinq.eclair.wire.protocol
 import fr.acinq.eclair.wire.protocol.{Error, NodeAddress}
-import fr.acinq.eclair.{AcceptOpenChannel, CltvExpiryDelta, Features, InitFeature, InterceptOpenChannelPlugin, InterceptOpenChannelReceived, InterceptOpenChannelResponse, Logs, MilliSatoshi, NodeParams, RejectOpenChannel, ToMilliSatoshiConversion}
+import fr.acinq.eclair.{CltvExpiryDelta, Features, InitFeature, InterceptChannelFundingPlugin, Logs, MilliSatoshi, NodeParams, ToMilliSatoshiConversion}
 import scodec.bits.ByteVector
 
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
@@ -64,7 +64,7 @@ object OpenChannelInterceptor {
   private case class PendingChannelsRateLimiterResponse(response: PendingChannelsRateLimiter.Response) extends CheckRateLimitsCommands
 
   private sealed trait QueryPluginCommands extends Command
-  private case class PluginOpenChannelResponse(pluginResponse: InterceptOpenChannelResponse) extends QueryPluginCommands
+  private case class PluginOpenChannelResponse(pluginResponse: InterceptChannelFundingPlugin.InterceptOpenChannelResponse) extends QueryPluginCommands
   private case object PluginTimeout extends QueryPluginCommands
   // @formatter:on
 
@@ -164,10 +164,10 @@ private class OpenChannelInterceptor(peer: ActorRef[Any],
     pendingChannelsRateLimiter ! AddOrRejectChannel(adapter, request.remoteNodeId, request.temporaryChannelId)
     receiveCommandMessage[CheckRateLimitsCommands](context, "checkRateLimits") {
       case PendingChannelsRateLimiterResponse(PendingChannelsRateLimiter.AcceptOpenChannel) =>
-        nodeParams.pluginOpenChannelInterceptor match {
+        nodeParams.channelFundingInterceptor match {
           case Some(plugin) => queryPlugin(plugin, request, localParams, ChannelConfig.standard, channelType)
           case None =>
-            peer ! SpawnChannelNonInitiator(request.open, ChannelConfig.standard, channelType, localParams, request.peerConnection.toClassic)
+            peer ! SpawnChannelNonInitiator(request.open, ChannelConfig.standard, channelType, None, localParams, request.peerConnection.toClassic)
             waitForRequest()
         }
       case PendingChannelsRateLimiterResponse(PendingChannelsRateLimiter.ChannelRateLimited) =>
@@ -177,20 +177,21 @@ private class OpenChannelInterceptor(peer: ActorRef[Any],
     }
   }
 
-  private def queryPlugin(plugin: InterceptOpenChannelPlugin, request: OpenChannelInterceptor.OpenChannelNonInitiator, localParams: LocalParams, channelConfig: ChannelConfig, channelType: SupportedChannelType): Behavior[Command] =
+  private def queryPlugin(plugin: InterceptChannelFundingPlugin, request: OpenChannelInterceptor.OpenChannelNonInitiator, localParams: LocalParams, channelConfig: ChannelConfig, channelType: SupportedChannelType): Behavior[Command] =
     Behaviors.withTimers { timers =>
       timers.startSingleTimer(PluginTimeout, pluginTimeout)
-      val pluginResponseAdapter = context.messageAdapter[InterceptOpenChannelResponse](PluginOpenChannelResponse)
+      val pluginResponseAdapter = context.messageAdapter[InterceptChannelFundingPlugin.InterceptOpenChannelResponse](PluginOpenChannelResponse)
+      val peerDetails = InterceptChannelFundingPlugin.PeerDetails(request.remoteNodeId, request.remoteFeatures, request.peerAddress)
       val defaultParams = DefaultParams(localParams.dustLimit, localParams.maxHtlcValueInFlightMsat, localParams.htlcMinimum, localParams.toSelfDelay, localParams.maxAcceptedHtlcs)
-      plugin.openChannelInterceptor ! InterceptOpenChannelReceived(pluginResponseAdapter, request, defaultParams)
+      plugin.channelFundingInterceptor ! InterceptChannelFundingPlugin.InterceptOpenChannelAttempt(pluginResponseAdapter, peerDetails, request.open, defaultParams)
       receiveCommandMessage[QueryPluginCommands](context, "queryPlugin") {
-        case PluginOpenChannelResponse(pluginResponse: AcceptOpenChannel) =>
+        case PluginOpenChannelResponse(pluginResponse: InterceptChannelFundingPlugin.AcceptOpenChannelAttempt) =>
           val localParams1 = updateLocalParams(localParams, pluginResponse.defaultParams)
-          peer ! SpawnChannelNonInitiator(request.open, channelConfig, channelType, localParams1, request.peerConnection.toClassic)
+          peer ! SpawnChannelNonInitiator(request.open, channelConfig, channelType, pluginResponse.addFunding_opt, localParams1, request.peerConnection.toClassic)
           timers.cancel(PluginTimeout)
           waitForRequest()
-        case PluginOpenChannelResponse(pluginResponse: RejectOpenChannel) =>
-          sendFailure(pluginResponse.error.toAscii, request)
+        case PluginOpenChannelResponse(pluginResponse: InterceptChannelFundingPlugin.RejectAttempt) =>
+          sendFailure(pluginResponse.reason, request)
           timers.cancel(PluginTimeout)
           waitForRequest()
         case PluginTimeout =>

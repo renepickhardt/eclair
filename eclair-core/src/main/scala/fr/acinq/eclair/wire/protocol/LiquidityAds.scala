@@ -17,8 +17,9 @@
 package fr.acinq.eclair.wire.protocol
 
 import fr.acinq.bitcoin.scalacompat.Crypto.{PrivateKey, PublicKey}
-import fr.acinq.bitcoin.scalacompat.{ByteVector64, Crypto, Satoshi}
+import fr.acinq.bitcoin.scalacompat.{ByteVector32, ByteVector64, Crypto, Satoshi, SatoshiLong}
 import fr.acinq.eclair.blockchain.fee.FeeratePerKw
+import fr.acinq.eclair.channel.{ChannelException, InvalidLiquidityAdsSig, LiquidityRatesRejected, MissingLiquidityAds}
 import fr.acinq.eclair.payment.relay.Relayer.RelayFees
 import fr.acinq.eclair.transactions.Transactions
 import fr.acinq.eclair.wire.protocol.CommonCodecs.{blockHeight, millisatoshi32, publicKey, satoshi32}
@@ -41,11 +42,74 @@ import java.nio.charset.StandardCharsets
  */
 object LiquidityAds {
 
+  private val DEFAULT_LEASE_DURATION = 4032 // ~1 month
+
   case class Config(feeBase: Satoshi, feeProportional: Int, maxLeaseDuration: Int) {
     def leaseRates(relayFees: RelayFees): LeaseRates = {
       // We make the remote node pay for one p2wpkh input and one p2wpkh output.
       // If we need more inputs, we will pay the fees for those additional inputs ourselves.
       LeaseRates(Transactions.claimP2WPKHOutputWeight, feeProportional, (relayFees.feeProportionalMillionths / 100).toInt, feeBase, relayFees.feeBase)
+    }
+  }
+
+  case class RequestRemoteFundingParams(fundingAmount: Satoshi, maxFee: Satoshi) {
+    def withDuration(leaseStart: BlockHeight, leaseDuration: Int = DEFAULT_LEASE_DURATION): RequestRemoteFunding = RequestRemoteFunding(fundingAmount, maxFee, leaseStart, leaseDuration)
+  }
+
+  /** Request inbound liquidity from a remote peer that supports liquidity ads. */
+  case class RequestRemoteFunding(fundingAmount: Satoshi, maxFee: Satoshi, leaseStart: BlockHeight, leaseDuration: Int) {
+    private val leaseExpiry: BlockHeight = leaseStart + leaseDuration
+    val requestFunds: ChannelTlv.RequestFunds = ChannelTlv.RequestFunds(fundingAmount, leaseStart + leaseDuration, leaseDuration)
+
+    def validateLeaseRates(remoteNodeId: PublicKey,
+                           channelId: ByteVector32,
+                           remoteFundingPubKey: PublicKey,
+                           remoteFundingAmount: Satoshi,
+                           fundingFeerate: FeeratePerKw,
+                           willFund_opt: Option[ChannelTlv.WillFund]): Either[ChannelException, Lease] = {
+      willFund_opt match {
+        case Some(willFund) =>
+          val witness = LeaseWitness(remoteFundingPubKey, leaseExpiry, leaseDuration, willFund.leaseRates)
+          val fees = willFund.leaseRates.fees(fundingFeerate, fundingAmount, remoteFundingAmount)
+          if (!LeaseWitness.verify(remoteNodeId, willFund.sig, witness)) {
+            Left(InvalidLiquidityAdsSig(channelId))
+          } else if (remoteFundingAmount <= 0.sat) {
+            Left(LiquidityRatesRejected(channelId))
+          } else if (maxFee < fees) {
+            Left(LiquidityRatesRejected(channelId))
+          } else {
+            Right(Lease(fees, willFund.sig, witness))
+          }
+        case None => Left(MissingLiquidityAds(channelId))
+      }
+    }
+  }
+
+  def validateLeaseRates_opt(remoteNodeId: PublicKey,
+                             channelId: ByteVector32,
+                             remoteFundingPubKey: PublicKey,
+                             remoteFundingAmount: Satoshi,
+                             fundingFeerate: FeeratePerKw,
+                             willFund_opt: Option[ChannelTlv.WillFund],
+                             requestRemoteFunding_opt: Option[RequestRemoteFunding]): Either[ChannelException, Option[Lease]] = {
+    requestRemoteFunding_opt match {
+      case Some(requestRemoteFunding) => requestRemoteFunding.validateLeaseRates(remoteNodeId, channelId, remoteFundingPubKey, remoteFundingAmount, fundingFeerate, willFund_opt) match {
+        case Left(t) => Left(t)
+        case Right(lease) => Right(Some(lease))
+      }
+      case None => Right(None)
+    }
+  }
+
+  /** We propose adding funds to a channel for a fee at the given rates. */
+  case class AddFunding(fundingAmount: Satoshi, rates: LeaseRates) {
+    def signLease(nodeKey: PrivateKey, localFundingPubKey: PublicKey, fundingFeerate: FeeratePerKw, requestFunds_opt: Option[ChannelTlv.RequestFunds]): Option[(ChannelTlv.WillFund, Lease)] = {
+      requestFunds_opt.map(requestFunds => {
+        val witness = LeaseWitness(localFundingPubKey, requestFunds.leaseExpiry, requestFunds.leaseDuration, rates)
+        val sig = LeaseWitness.sign(nodeKey, witness)
+        val fees = rates.fees(fundingFeerate, requestFunds.amount, fundingAmount)
+        (ChannelTlv.WillFund(sig, rates), Lease(fees, sig, witness))
+      })
     }
   }
 
@@ -108,5 +172,11 @@ object LiquidityAds {
       ("channel_fee_max_basis" | uint16) ::
       ("channel_fee_max_base_msat" | millisatoshi32)
     ).as[LeaseWitness]
+
+  /**
+   * Once a liquidity ads has been paid, we should keep track of the lease, and check that our peer doesn't raise their
+   * routing fees above the values they signed up for.
+   */
+  case class Lease(fees: Satoshi, sellerSig: ByteVector64, witness: LeaseWitness)
 
 }

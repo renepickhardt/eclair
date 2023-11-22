@@ -96,7 +96,7 @@ case class NodeParams(nodeKeyManager: NodeKeyManager,
 
   val pluginMessageTags: Set[Int] = pluginParams.collect { case p: CustomFeaturePlugin => p.messageTags }.toSet.flatten
 
-  val pluginOpenChannelInterceptor: Option[InterceptOpenChannelPlugin] = pluginParams.collectFirst { case p: InterceptOpenChannelPlugin => p }
+  val channelFundingInterceptor: Option[InterceptChannelFundingPlugin] = pluginParams.collectFirst { case p: InterceptChannelFundingPlugin => p }
 
   val liquidityRates_opt: Option[LiquidityAds.LeaseRates] = liquidityAdsConfig_opt.map(_.leaseRates(relayParams.defaultFees(announceChannel = true)))
 
@@ -362,7 +362,7 @@ object NodeParams extends Logging {
     require(Features.knownFeatures.map(_.mandatory).intersect(pluginFeatureSet).isEmpty, "Plugin feature bit overlaps with known feature bit")
     require(pluginFeatureSet.size == pluginMessageParams.size, "Duplicate plugin feature bits found")
 
-    val interceptOpenChannelPlugins = pluginParams.collect { case p: InterceptOpenChannelPlugin => p }
+    val interceptOpenChannelPlugins = pluginParams.collect { case p: InterceptChannelFundingPlugin => p }
     require(interceptOpenChannelPlugins.size <= 1, s"At most one plugin is allowed to intercept channel open messages, but multiple such plugins were registered: ${interceptOpenChannelPlugins.map(_.getClass.getSimpleName).mkString(", ")}. Disable conflicting plugins and restart eclair.")
 
     val coreAndPluginFeatures: Features[Feature] = features.copy(unknown = features.unknown ++ pluginMessageParams.map(_.pluginFeature))

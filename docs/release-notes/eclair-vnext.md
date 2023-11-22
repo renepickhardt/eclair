@@ -56,6 +56,7 @@ This feature leaks a bit of information about the balance when the channel is al
 
 - `bumpforceclose` can be used to make a force-close confirm faster, by spending the anchor output (#2743)
 - `nodes` allows filtering nodes that offer liquidity ads (#2550)
+- `open` allows requesting inbound liquidity from the remote node using liquidity ads (#2550)
 
 ### Miscellaneous improvements and bug fixes
 

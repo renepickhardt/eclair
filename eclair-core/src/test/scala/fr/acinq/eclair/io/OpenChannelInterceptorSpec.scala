@@ -35,7 +35,7 @@ import fr.acinq.eclair.io.PeerSpec.createOpenChannelMessage
 import fr.acinq.eclair.io.PendingChannelsRateLimiter.AddOrRejectChannel
 import fr.acinq.eclair.payment.Bolt11Invoice.defaultFeatures.initFeatures
 import fr.acinq.eclair.wire.protocol.{ChannelTlv, Error, IPAddress, NodeAddress, OpenChannel, OpenChannelTlv, TlvStream}
-import fr.acinq.eclair.{AcceptOpenChannel, CltvExpiryDelta, Features, InterceptOpenChannelCommand, InterceptOpenChannelPlugin, InterceptOpenChannelReceived, MilliSatoshiLong, RejectOpenChannel, TestConstants, UnknownFeature, randomBytes32, randomKey}
+import fr.acinq.eclair.{AcceptOpenChannel, CltvExpiryDelta, Features, InterceptOpenChannelCommand, InterceptChannelFundingPlugin, InterceptOpenChannelReceived, MilliSatoshiLong, RejectOpenChannel, TestConstants, UnknownFeature, randomBytes32, randomKey}
 import org.scalatest.funsuite.FixtureAnyFunSuiteLike
 import org.scalatest.{Outcome, Tag}
 
@@ -54,10 +54,10 @@ class OpenChannelInterceptorSpec extends ScalaTestWithActorTestKit(ConfigFactory
     val pluginInterceptor = TestProbe[InterceptOpenChannelCommand]()
     val wallet = new DummyOnChainWallet()
     val pendingChannelsRateLimiter = TestProbe[PendingChannelsRateLimiter.Command]()
-    val plugin = new InterceptOpenChannelPlugin {
+    val plugin = new InterceptChannelFundingPlugin {
       override def name: String = "OpenChannelInterceptorPlugin"
 
-      override def openChannelInterceptor: ActorRef[InterceptOpenChannelCommand] = pluginInterceptor.ref
+      override def channelFundingInterceptor: ActorRef[InterceptOpenChannelCommand] = pluginInterceptor.ref
     }
     val pluginParams = TestConstants.Alice.nodeParams.pluginParams :+ plugin
     val nodeParams = TestConstants.Alice.nodeParams.copy(pluginParams = pluginParams)
